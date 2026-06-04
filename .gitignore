@@ -32,6 +32,9 @@ ENV/
 *.swp
 *.swo
 
+# graphify — generated code index, rebuild with: graphify build .
+graphify-out/
+
 # macOS
 .DS_Store
 
