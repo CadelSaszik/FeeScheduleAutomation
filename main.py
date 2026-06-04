@@ -4,6 +4,8 @@ Options Exchange Fee Schedule Automation
 Entry point for CLI and scheduler.
 
 Usage:
+    python main.py --preflight                   # Check all endpoints, parse output, no API calls
+    python main.py --preflight --exchange edgx   # Preflight a single exchange
     python main.py --run-now                     # All exchanges, full pipeline
     python main.py --mock                        # Same pipeline with mock data (no API key)
     python main.py --mock --mock-jitter          # Mock with simulated rate changes (tests alerts)
@@ -41,6 +43,182 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("main")
+
+
+def cmd_preflight(exchange_ids: list[str] | None) -> None:
+    """Fetch and parse every exchange's fee schedule without calling Claude.
+
+    Checks:
+      1. HTTP reachability + status code
+      2. Content size (sanity — too small = probably an error page)
+      3. Text/CSV/HTML extraction succeeds and produces usable content
+      4. Last run status from the DB (so you know if a prior real run worked)
+    Prints a colour-coded pass/fail table and a preview of extracted content.
+    """
+    import time
+    import yaml
+    from src.fetcher import get_fetcher
+    from src.pipeline import _find_manual_file, _manual_fetch_result
+    from src.persistence.db import Database
+
+    with open("config/exchanges.yaml") as f:
+        cfg = yaml.safe_load(f)
+
+    exchanges = [
+        ex for ex in cfg["exchanges"]
+        if ex.get("enabled", True)
+        and (exchange_ids is None or ex["id"] in exchange_ids)
+    ]
+
+    if not exchanges:
+        print("No matching enabled exchanges found.")
+        return
+
+    db = Database()
+    # Most-recent run per exchange (run_history is ordered newest-first)
+    last_runs: dict[str, dict] = {}
+    for r in reversed(db.get_run_history(limit=200)):
+        last_runs[r["exchange_id"]] = r
+
+    PASS  = "\033[92mPASS\033[0m"
+    WARN  = "\033[93mWARN\033[0m"
+    FAIL  = "\033[91mFAIL\033[0m"
+    SKIP  = "\033[90mSKIP\033[0m"
+
+    results = []
+
+    for ex in exchanges:
+        xid      = ex["id"]
+        xname    = ex["name"]
+        url      = ex["fee_url"]
+        operator = ex["operator"]
+
+        print(f"\n{'-'*70}")
+        print(f"  {xname}  ({xid.upper()})")
+        print(f"  URL: {url}")
+
+        t0 = time.time()
+
+        # -- Last run from DB ---------------------------------------------
+        last = last_runs.get(xid)
+        if last:
+            status_icon = PASS if last["status"] == "ok" else FAIL
+            print(f"  Last run: {status_icon}  {last['started_at'][:19]}  "
+                  f"{last['row_count']} rows  "
+                  + (f"ERR: {last['error_message'][:60]}" if last.get("error_message") else ""))
+        else:
+            print(f"  Last run: {SKIP}  (no prior run in DB)")
+
+        # -- Manual file fallback? ----------------------------------------
+        manual = _find_manual_file(xid)
+        if manual:
+            print(f"  Manual file: {manual}  (will be used instead of HTTP fetch)")
+
+        # -- HTTP fetch ---------------------------------------------------
+        fetcher_cls = get_fetcher(operator)
+        fetcher = fetcher_cls(ex)
+        try:
+            if manual:
+                fetch_result = _manual_fetch_result(xid, operator, ex, manual)
+            else:
+                fetch_result = fetcher.fetch()
+            elapsed = time.time() - t0
+        except Exception as exc:
+            print(f"  Fetch: {FAIL}  Exception: {exc}")
+            results.append((xid, "FAIL", "fetch exception"))
+            continue
+
+        if not fetch_result.ok:
+            print(f"  Fetch: {FAIL}  HTTP {fetch_result.http_status}  {fetch_result.error or ''}")
+            results.append((xid, "FAIL", f"HTTP {fetch_result.http_status}"))
+            continue
+
+        size_kb = len(fetch_result.raw_bytes) / 1024
+        print(f"  Fetch: {PASS}  HTTP 200  {size_kb:.1f} KB  {elapsed:.2f}s  "
+              f"type={fetch_result.content_type}")
+
+        MIN_BYTES = 500
+        if len(fetch_result.raw_bytes) < MIN_BYTES:
+            print(f"  {WARN}  Response is suspiciously small ({len(fetch_result.raw_bytes)} bytes) "
+                  f"— may be an error page")
+
+        # -- Text extraction ----------------------------------------------
+        try:
+            text = fetcher.extract_text(fetch_result)
+        except Exception as exc:
+            print(f"  Parse: {FAIL}  Exception during text extraction: {exc}")
+            results.append((xid, "FAIL", "parse exception"))
+            continue
+
+        if not text or not text.strip():
+            print(f"  Parse: {FAIL}  Extraction returned empty text")
+            results.append((xid, "FAIL", "empty text"))
+            continue
+
+        char_count = len(text)
+        line_count = text.count("\n")
+        print(f"  Parse: {PASS}  {char_count:,} chars  {line_count:,} lines")
+
+        # -- Content preview (first 8 non-empty lines) --------------------
+        preview_lines = [l for l in text.splitlines() if l.strip()][:8]
+        print(f"  Preview:")
+        for line in preview_lines:
+            print(f"    {line[:100]}")
+
+        # -- Heuristic checks ---------------------------------------------
+        warnings = []
+        text_lower = text.lower()
+
+        # Check for signs the page returned an error/login wall instead of fee data
+        for phrase in ("access denied", "403 forbidden", "sign in", "login required",
+                       "page not found", "404", "error occurred"):
+            if phrase in text_lower[:2000]:
+                warnings.append(f"response may be an error page (contains '{phrase}')")
+
+        # Check for expected fee-related keywords
+        has_fee_signal = any(kw in text_lower for kw in
+                             ("fee", "rate", "rebate", "customer", "penny", "code"))
+        if not has_fee_signal:
+            warnings.append("no fee-related keywords found — content may not be a fee schedule")
+
+        if fetch_result.content_type == "csv":
+            # CSV-specific: check it has at least 3 columns and multiple rows
+            lines = [l for l in text.splitlines() if l.strip()]
+            col_counts = [len(l.split(",")) for l in lines[:5]]
+            if not all(c >= 2 for c in col_counts):
+                warnings.append("CSV has fewer than 2 columns — may be malformed")
+            if len(lines) < 5:
+                warnings.append(f"CSV has only {len(lines)} rows — suspiciously sparse")
+            else:
+                print(f"  CSV rows: {len(lines)}")
+
+        for w in warnings:
+            print(f"  {WARN}  {w}")
+
+        overall = "WARN" if warnings else "PASS"
+        results.append((xid, overall, f"{char_count:,} chars"))
+
+    # -- Summary table ----------------------------------------------------
+    print(f"\n{'='*70}")
+    print("  PREFLIGHT SUMMARY")
+    print(f"{'='*70}")
+    passed  = [r for r in results if r[1] == "PASS"]
+    warned  = [r for r in results if r[1] == "WARN"]
+    failed  = [r for r in results if r[1] == "FAIL"]
+
+    for xid, status, detail in results:
+        icon = PASS if status == "PASS" else (WARN if status == "WARN" else FAIL)
+        print(f"  {icon}  {xid.upper():<12}  {detail}")
+
+    print(f"\n  {len(passed)} PASS  |  {len(warned)} WARN  |  {len(failed)} FAIL  "
+          f"out of {len(results)} checked")
+
+    if failed:
+        print(f"\n  Fix FAIL exchanges before running --run-now.")
+    elif warned:
+        print(f"\n  Review WARN exchanges — they fetched OK but content looks unusual.")
+    else:
+        print(f"\n  All endpoints healthy. Safe to run --run-now.")
 
 
 def cmd_run_now(exchange_ids: list[str] | None, mock: bool, mock_jitter: bool) -> None:
@@ -241,6 +419,11 @@ def main() -> None:
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Fetch and parse every endpoint without calling Claude — verify before spending tokens",
+    )
+    group.add_argument(
         "--run-now",
         action="store_true",
         help="Run the full pipeline immediately (requires ANTHROPIC_API_KEY)",
@@ -307,7 +490,9 @@ def main() -> None:
     if args.mock_jitter and not args.mock:
         parser.error("--mock-jitter requires --mock")
 
-    if args.run_now:
+    if args.preflight:
+        cmd_preflight(args.exchange)
+    elif args.run_now:
         cmd_run_now(args.exchange, mock=False, mock_jitter=False)
     elif args.mock:
         cmd_run_now(args.exchange, mock=True, mock_jitter=args.mock_jitter)
