@@ -47,6 +47,7 @@ class MockExtractor:
         operator: str,
         exchange_name: str,
         fee_text: str,
+        content_type: str = "text",
     ) -> ExtractionResult:
         extracted_at = datetime.now(tz=timezone.utc)
         base_make, base_take = _BASE_RATES.get(operator, (0.10, -0.47))

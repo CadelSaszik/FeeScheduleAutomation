@@ -148,6 +148,7 @@ class ClaudeExtractor:
         operator: str,
         exchange_name: str,
         fee_text: str,
+        content_type: str = "text",
     ) -> ExtractionResult:
         extracted_at = datetime.now(tz=timezone.utc)
         result = ExtractionResult(
@@ -162,7 +163,7 @@ class ClaudeExtractor:
             return result
 
         system_prompt = get_system_prompt(operator)
-        user_message = build_user_message(exchange_name, fee_text)
+        user_message = build_user_message(exchange_name, fee_text, content_type=content_type)
 
         try:
             logger.info("[%s] Sending to Claude (%s) for extraction…", exchange_id, MODEL)

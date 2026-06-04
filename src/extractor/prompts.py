@@ -104,18 +104,58 @@ to flag something as low confidence than to silently emit a wrong number.
 SYSTEM_PROMPTS = {
     "cboe": """You are a financial data extraction specialist analyzing CBOE Group options exchange fee schedules.
 
-CBOE operates four U.S. options exchanges: CBOE C1, C2, EDGX, and BZX. Each has a distinct fee schedule PDF but follows a common structure:
-- Tables organized by capacity code (Customer, Professional Customer, Market Maker, Firm, BD, JBO)
-- Electronic transaction fees listed first, then AIM (Automated Improvement Mechanism) fees
-- CBOE C1 also has a Solicited Order Mechanism (SUM) — label this as Solicitation trade type, NOT Flash Auction
-- EDGX and BZX use liquidity codes (e.g. C=Remove, A=Add) — always capture these in liq_code
-- Penny and Non-Penny classes are called out explicitly in the tables
-- Complex orders appear in a dedicated section (usually labeled "Complex Orders" or "MLEG")
-- Rates may use parentheses for rebates e.g. "($0.47)" — treat these as POSITIVE rebates
-- Footnotes on CBOE schedules often appear at the bottom of each page and reference rates by number or letter
-- Pay special attention to footnotes that say "effective [date]" — these may indicate a recently changed rate
+CBOE operates four U.S. options exchanges: CBOE C1, C2, EDGX, and BZX.
 
-Extract only Customer (CUST) and Professional Customer (PCUST) rows.
+## Input format
+
+The input is a 3-column CSV exported directly from CBOE's fee schedule system:
+  Code, Description, Fee
+
+- **Code**: CBOE's internal liquidity code (e.g. "CA", "NP", "ZA")
+- **Description**: plain-English label (e.g. "Customer Add Penny", "Professional Remove Non-Penny")
+- **Fee**: per-contract dollar amount. Negative = fee charged. Positive = rebate paid to you.
+
+## How to read the description field
+
+Map description keywords to schema fields as follows:
+
+**account_type:**
+- "Customer" (without "Professional" or "Non-Customer") → CUST
+- "Professional", "Non-Customer", "Pro Customer" → PCUST
+- Skip rows for "Market Maker", "Firm", "Broker Dealer", "BD", "JBO"
+
+**ticker_class:**
+- "Penny" (without "Non-Penny") → Penny
+- "Non-Penny" → Non-Penny
+- If neither appears, check if the exchange has a single class and note it
+
+**trade_type:**
+- Default / no qualifier → Electronic
+- "AIM" (Automated Improvement Mechanism): Agency side → auction_init_rate; Contra/Response → auction_resp_rate
+- "SAM" (Solicited Order Mechanism) → Solicitation; Agency side → auction_init_rate; Contra → auction_resp_rate
+- "QCC" (Qualified Contingent Cross) → Solicitation
+
+**sec_type:**
+- "Complex", codes starting with Z (ZA, ZB, ZC…) → MLEG
+- All others → OPT
+
+**make_rate vs take_rate:**
+- "Add", "Maker", "Post" → make_rate
+- "Remove", "Taker", "Take" → take_rate
+- If the description implies a single Electronic rate with no Add/Remove qualifier, put it in take_rate
+
+**liq_code:** use the Code column value (e.g. "CA", "NP")
+
+**source_section:** use the Description field verbatim as the source reference.
+**source_page:** write "CSV row: <Code>" (e.g. "CSV row: CA").
+**footnote_refs:** [] (CSV has no footnotes; footnote catalog will be empty)
+**confidence:** high for rows where the description unambiguously maps to the schema; medium if the mapping required interpretation.
+
+## Important rules
+- Extract only CUST and PCUST rows; skip Market Maker, Firm, BD, JBO rows entirely.
+- Do NOT conflate CBOE SUM/SAM with a Flash Auction — it is Solicitation.
+- AIM breakup fee (if present, often described as "AIM Cancel") → breakup_rate.
+- Fee values are already in dollars per contract — do not divide or convert.
 """ + OUTPUT_SCHEMA,
 
     "nasdaq": """You are a financial data extraction specialist analyzing Nasdaq options exchange fee schedules.
@@ -194,15 +234,25 @@ def get_system_prompt(operator: str) -> str:
     return SYSTEM_PROMPTS.get(operator, DEFAULT_SYSTEM_PROMPT)
 
 
-def build_user_message(exchange_name: str, fee_text: str) -> str:
+def build_user_message(exchange_name: str, fee_text: str, content_type: str = "text") -> str:
     max_chars = 140_000
     truncated = fee_text[:max_chars]
     if len(fee_text) > max_chars:
-        truncated += "\n\n[... TRUNCATED — remaining pages omitted ...]"
+        truncated += "\n\n[... TRUNCATED — remaining content omitted ...]"
 
-    return (
-        f"Extract all Customer (CUST) and Professional Customer (PCUST) fee rows from "
-        f"the following {exchange_name} fee schedule.\n\n"
-        f"Remember: catalog ALL footnotes first, then extract rows with source citations.\n\n"
-        f"Fee schedule text:\n\n{truncated}"
-    )
+    if content_type == "csv":
+        preamble = (
+            f"Extract all Customer (CUST) and Professional Customer (PCUST) fee rows from "
+            f"the following {exchange_name} fee schedule CSV.\n\n"
+            f"The CSV has three columns: Code, Description, Fee (dollars per contract).\n"
+            f"No footnotes exist in this format — return an empty footnotes array.\n\n"
+            f"Fee schedule CSV:\n\n{truncated}"
+        )
+    else:
+        preamble = (
+            f"Extract all Customer (CUST) and Professional Customer (PCUST) fee rows from "
+            f"the following {exchange_name} fee schedule.\n\n"
+            f"Remember: catalog ALL footnotes first, then extract rows with source citations.\n\n"
+            f"Fee schedule text:\n\n{truncated}"
+        )
+    return preamble

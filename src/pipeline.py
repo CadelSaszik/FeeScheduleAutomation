@@ -59,6 +59,7 @@ def run_exchange(
 
     # 2. Fetch (skip in mock mode — no real file needed)
     fee_text = ""
+    fetch_result = None
     if is_mock:
         fee_text = "[mock]"
         db.save_raw_file(
@@ -122,7 +123,8 @@ def run_exchange(
             return None, error_msg
 
     # 3. AI (or mock) extraction
-    extraction = extractor.extract(exchange_id, operator, exchange_name, fee_text)
+    content_type = "csv" if (fetch_result is not None and fetch_result.content_type == "csv") else "text"
+    extraction = extractor.extract(exchange_id, operator, exchange_name, fee_text, content_type=content_type)
     db.finish_run(run_id, extraction)
 
     if not extraction.ok:
