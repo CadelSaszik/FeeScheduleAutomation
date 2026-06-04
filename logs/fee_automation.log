@@ -1,0 +1,72 @@
+2026-06-04 15:10:45,631 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 15:10:45,635 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 15:10:45,665 [INFO] src.extractor.mock: [edgx] Mock extractor produced 24 rows
+2026-06-04 15:10:45,700 [INFO] src.diff.engine: [edgx] Diff: 24 added, 0 removed, 0 modified
+2026-06-04 15:10:45,700 [WARNING] src.alerts.teams: Teams webhook not configured — skipping alert
+2026-06-04 15:10:46,221 [ERROR] src.alerts.email: Email send failed: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 006d021491bc7-69e4644dacdsm4363714eaf.13 - gsmtp')
+2026-06-04 15:10:46,222 [INFO] src.pipeline: Pipeline complete — 1 exchange(s) processed, 0 error(s)
+2026-06-04 15:11:24,063 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 15:11:24,069 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 15:11:24,103 [INFO] src.extractor.mock: [edgx] Mock extractor produced 24 rows
+2026-06-04 15:11:24,143 [INFO] src.diff.engine: [edgx] Diff: 0 added, 0 removed, 0 modified
+2026-06-04 15:11:24,143 [WARNING] src.alerts.teams: Teams webhook not configured — skipping alert
+2026-06-04 15:11:24,587 [ERROR] src.alerts.email: Email send failed: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5614622812f47-4865b91a9d2sm5131584b6e.12 - gsmtp')
+2026-06-04 15:11:24,587 [INFO] src.pipeline: Pipeline complete — 1 exchange(s) processed, 0 error(s)
+2026-06-04 15:24:14,962 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 15:24:14,965 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 15:24:14,991 [INFO] src.extractor.mock: [edgx] Mock extractor produced 24 rows
+2026-06-04 15:24:15,023 [INFO] src.diff.engine: [edgx] Diff: 0 added, 0 removed, 0 modified
+2026-06-04 15:24:15,023 [WARNING] src.alerts.teams: Teams webhook not configured — skipping alert
+2026-06-04 15:24:15,576 [ERROR] src.alerts.email: Email send failed: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 46e09a7af769-7e6e7965006sm4663712a34.23 - gsmtp')
+2026-06-04 15:24:15,576 [INFO] src.pipeline: Pipeline complete — 1 exchange(s) processed, 0 error(s)
+2026-06-04 15:25:07,640 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 15:25:07,643 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 15:25:07,682 [INFO] src.extractor.mock: [edgx] Mock extractor produced 24 rows
+2026-06-04 15:25:07,723 [INFO] src.diff.engine: [edgx] Diff: 0 added, 0 removed, 0 modified
+2026-06-04 15:25:07,723 [WARNING] src.alerts.teams: Teams webhook not configured — skipping alert
+2026-06-04 15:25:08,187 [ERROR] src.alerts.email: Email send failed: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5614622812f47-4865b91eaffsm5055811b6e.11 - gsmtp')
+2026-06-04 15:25:08,188 [INFO] src.pipeline: Pipeline complete — 1 exchange(s) processed, 0 error(s)
+2026-06-04 15:25:34,751 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 15:25:34,754 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 15:25:34,794 [INFO] src.extractor.mock: [edgx] Mock extractor produced 24 rows
+2026-06-04 15:25:34,829 [INFO] src.diff.engine: [edgx] Diff: 0 added, 0 removed, 0 modified
+2026-06-04 15:25:34,829 [WARNING] src.alerts.teams: Teams webhook not configured — skipping alert
+2026-06-04 15:25:35,306 [ERROR] src.alerts.email: Email send failed: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 586e51a60fabf-440d7b79ad4sm6334107fac.4 - gsmtp')
+2026-06-04 15:25:35,307 [INFO] src.pipeline: Pipeline complete — 1 exchange(s) processed, 0 error(s)
+2026-06-04 15:37:26,234 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 15:37:26,238 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 15:37:26,282 [INFO] src.extractor.mock: [edgx] Mock extractor produced 24 rows
+2026-06-04 15:37:26,320 [INFO] src.diff.engine: [edgx] Diff: 0 added, 0 removed, 0 modified
+2026-06-04 15:37:26,320 [WARNING] src.alerts.teams: Teams webhook not configured — skipping alert
+2026-06-04 15:37:26,760 [ERROR] src.alerts.email: Email send failed: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 46e09a7af769-7e6e75db138sm4479055a34.11 - gsmtp')
+2026-06-04 15:37:26,761 [INFO] src.pipeline: Pipeline complete — 1 exchange(s) processed, 0 error(s)
+2026-06-04 15:37:35,864 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 15:37:35,867 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 15:37:35,901 [INFO] src.extractor.mock: [edgx] Mock extractor produced 24 rows
+2026-06-04 15:37:35,939 [INFO] src.diff.engine: [edgx] Diff: 0 added, 0 removed, 2 modified
+2026-06-04 15:37:35,939 [WARNING] src.alerts.teams: Teams webhook not configured — skipping alert
+2026-06-04 15:37:36,340 [ERROR] src.alerts.email: Email send failed: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 586e51a60fabf-440d8297311sm5857890fac.12 - gsmtp')
+2026-06-04 15:37:36,341 [INFO] src.pipeline: Pipeline complete — 1 exchange(s) processed, 0 error(s)
+2026-06-04 15:59:30,327 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 15:59:30,332 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 15:59:45,797 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 15:59:45,800 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 15:59:45,834 [INFO] src.extractor.mock: [edgx] Mock extractor produced 24 rows
+2026-06-04 15:59:45,875 [INFO] src.diff.engine: [edgx] Diff: 24 added, 0 removed, 0 modified
+2026-06-04 15:59:45,875 [WARNING] src.alerts.teams: Teams webhook not configured — skipping alert
+2026-06-04 15:59:46,266 [ERROR] src.alerts.email: Email send failed: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5614622812f47-4865b96e2dbsm5181533b6e.13 - gsmtp')
+2026-06-04 15:59:46,266 [INFO] src.pipeline: Pipeline complete — 1 exchange(s) processed, 0 error(s)
+2026-06-04 16:01:43,707 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 16:01:43,710 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 16:01:43,746 [INFO] src.extractor.mock: [edgx] Mock extractor produced 24 rows
+2026-06-04 16:01:43,785 [INFO] src.diff.engine: [edgx] Diff: 0 added, 0 removed, 0 modified
+2026-06-04 16:01:43,786 [WARNING] src.alerts.teams: Teams webhook not configured — skipping alert
+2026-06-04 16:01:44,230 [ERROR] src.alerts.email: Email send failed: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 586e51a60fabf-440d8295aaasm6633119fac.9 - gsmtp')
+2026-06-04 16:01:44,231 [INFO] src.pipeline: Pipeline complete — 1 exchange(s) processed, 0 error(s)
+2026-06-04 16:01:50,379 [INFO] src.pipeline: Running pipeline for 1 exchange(s) [MOCK MODE]…
+2026-06-04 16:01:50,382 [INFO] src.pipeline: === Starting run for CBOE EDGX Options (edgx) [MOCK] ===
+2026-06-04 16:01:50,423 [INFO] src.extractor.mock: [edgx] Mock extractor produced 24 rows
+2026-06-04 16:01:50,467 [INFO] src.diff.engine: [edgx] Diff: 0 added, 0 removed, 2 modified
+2026-06-04 16:01:50,467 [WARNING] src.alerts.teams: Teams webhook not configured — skipping alert
+2026-06-04 16:01:50,919 [ERROR] src.alerts.email: Email send failed: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5614622812f47-4865b7ad946sm5142105b6e.8 - gsmtp')
+2026-06-04 16:01:50,920 [INFO] src.pipeline: Pipeline complete — 1 exchange(s) processed, 0 error(s)
