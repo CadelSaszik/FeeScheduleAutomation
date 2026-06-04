@@ -3,7 +3,8 @@ exchanges:
     name: CBOE EDGX Options
     mic: EDGO
     operator: cboe
-    fee_url: https://cdn.cboe.com/resources/regulation/fee_schedules/EDGX-Options-Fee-Schedule.pdf
+    # Landing page — fetcher scrapes this for the current PDF link
+    fee_url: https://www.cboe.com/us/options/membership/fee_schedule/edgx/
     schedule_type: pdf
     enabled: true
 
@@ -11,7 +12,7 @@ exchanges:
     name: CBOE BZX Options
     mic: BATO
     operator: cboe
-    fee_url: https://cdn.cboe.com/resources/regulation/fee_schedules/BZX-Options-Fee-Schedule.pdf
+    fee_url: https://www.cboe.com/us/options/membership/fee_schedule/bzx/
     schedule_type: pdf
     enabled: true
 
@@ -19,7 +20,7 @@ exchanges:
     name: CBOE C2 Options
     mic: C2OX
     operator: cboe
-    fee_url: https://cdn.cboe.com/resources/regulation/fee_schedules/C2-Options-Exchange-Fee-Schedule.pdf
+    fee_url: https://www.cboe.com/us/options/membership/fee_schedule/ctwo/
     schedule_type: pdf
     enabled: true
 
@@ -27,7 +28,7 @@ exchanges:
     name: CBOE Options Exchange
     mic: XCBO
     operator: cboe
-    fee_url: https://cdn.cboe.com/resources/regulation/fee_schedules/CBOE-Options-Exchange-Fee-Schedule.pdf
+    fee_url: https://www.cboe.com/us/options/membership/fee_schedule/cone/
     schedule_type: pdf
     enabled: true
 
