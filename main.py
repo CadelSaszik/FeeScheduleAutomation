@@ -93,12 +93,12 @@ def cmd_report(trade_type_filter: str | None = None) -> None:
         return
 
     sort_key = lambda x: (
-        x["exchange_id"],
-        x.get("account_type", ""),
-        x.get("ticker_class", ""),
-        x.get("sec_type", ""),
-        x.get("trade_type", ""),
-        x.get("liq_code", "") or "",
+        x.get("exchange_id") or "",
+        x.get("account_type") or "",
+        x.get("ticker_class") or "",
+        x.get("sec_type") or "",
+        x.get("trade_type") or "",
+        x.get("liq_code") or "",
     )
 
     table_rows = []
@@ -106,12 +106,12 @@ def cmd_report(trade_type_filter: str | None = None) -> None:
         if trade_type_filter and r.get("trade_type") != trade_type_filter:
             continue
         table_rows.append([
-            r["exchange_id"].upper(),
-            r.get("account_type", ""),
-            r.get("ticker_class", ""),
-            r.get("sec_type", ""),
-            r.get("trade_type", ""),
-            r.get("liq_code", "") or "",
+            (r.get("exchange_id") or "").upper(),
+            r.get("account_type") or "",
+            r.get("ticker_class") or "",
+            r.get("sec_type") or "",
+            r.get("trade_type") or "",
+            r.get("liq_code") or "",
             _fmt(r.get("make_rate")),
             _fmt(r.get("take_rate")),
             _fmt(r.get("auction_init_rate")),
