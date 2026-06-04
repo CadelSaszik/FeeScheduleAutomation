@@ -25,6 +25,7 @@ from .insights.analyzer import InsightAnalyzer
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", "config/exchanges.yaml"))
+RAW_DIR = Path(os.getenv("RAW_DATA_DIR", "data/raw"))
 
 Extractor = Union[ClaudeExtractor, MockExtractor]
 
@@ -72,7 +73,20 @@ def run_exchange(
     else:
         fetcher_cls = get_fetcher(operator)
         fetcher = fetcher_cls(exchange_cfg)
-        fetch_result = fetcher.fetch()
+
+        # Manual fallback: if a file was hand-downloaded into data/raw/<id>/manual.*
+        # use it instead of fetching. Useful when a site blocks automated downloads.
+        manual_file = _find_manual_file(exchange_id)
+        if manual_file:
+            logger.info(
+                "[%s] Using manually placed file: %s (skipping HTTP fetch)",
+                exchange_id, manual_file,
+            )
+            fetch_result = _manual_fetch_result(
+                exchange_id, operator, exchange_cfg, manual_file
+            )
+        else:
+            fetch_result = fetcher.fetch()
 
         db.save_raw_file(
             run_id=run_id,
@@ -223,4 +237,37 @@ def run_all(
     logger.info(
         "Pipeline complete — %d exchange(s) processed, %d error(s)",
         len(exchanges), len(errors),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Manual file fallback helpers
+# ---------------------------------------------------------------------------
+
+def _find_manual_file(exchange_id: str) -> Optional[Path]:
+    """Return a manually placed file at data/raw/<id>/manual.{pdf,html} if present."""
+    for ext in ("pdf", "html"):
+        candidate = RAW_DIR / exchange_id / f"manual.{ext}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _manual_fetch_result(
+    exchange_id: str,
+    operator: str,
+    exchange_cfg: dict,
+    file_path: Path,
+) -> "FetchResult":
+    from .fetcher.base import FetchResult
+    content_type = "pdf" if file_path.suffix == ".pdf" else "html"
+    return FetchResult(
+        exchange_id=exchange_id,
+        operator=operator,
+        url=f"[manual: {file_path.name}]",
+        fetched_at=datetime.now(tz=timezone.utc),
+        content_type=content_type,
+        raw_bytes=file_path.read_bytes(),
+        file_path=file_path,
+        http_status=200,
     )

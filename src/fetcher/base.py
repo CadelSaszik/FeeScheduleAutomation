@@ -19,11 +19,38 @@ RAW_DIR = Path(os.getenv("RAW_DATA_DIR", "data/raw"))
 TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SEC", "30"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 
+# Browser-realistic headers. The User-Agent matches a current Chrome on Windows.
+# Referer is set per-operator in each subclass's _download() override.
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; FeeScheduleBot/1.0; "
-        "+https://watershedtech.us)"
-    )
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "application/pdf,image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "DNT": "1",
+}
+
+# Landing page that should appear in Referer for each operator's CDN.
+# These are the pages a real user would navigate from to reach the PDF link.
+OPERATOR_REFERERS = {
+    "cboe":   "https://www.cboe.com/us/options/membership/fee_schedule/",
+    "nasdaq": "https://listingcenter.nasdaq.com/rulebook/nasdaq/rules/",
+    "nyse":   "https://www.nyse.com/markets/options-fees",
+    "miax":   "https://www.miaxoptions.com/fee-schedules",
+    "box":    "https://boxoptions.com/trading/fee-schedule/",
+    "memx":   "https://info.memxtrading.com/fee-schedules/",
 }
 
 
@@ -53,6 +80,11 @@ class BaseFetcher(ABC):
         self.schedule_type: str = exchange_cfg["schedule_type"]
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
+        # Set operator-specific Referer so requests look like they came from
+        # navigating the exchange's own site rather than hitting the URL cold.
+        referer = OPERATOR_REFERERS.get(self.operator, "")
+        if referer:
+            self.session.headers["Referer"] = referer
 
     # ------------------------------------------------------------------
     # Public interface
@@ -67,12 +99,14 @@ class BaseFetcher(ABC):
             try:
                 logger.info(
                     "[%s] Fetching %s (attempt %d/%d)",
-                    self.exchange_id, self.fee_url, attempt, MAX_RETRIES
+                    self.exchange_id, self.fee_url, attempt, MAX_RETRIES,
                 )
                 raw, status = self._download(self.fee_url)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(raw)
-                logger.info("[%s] Saved → %s (%d bytes)", self.exchange_id, dest, len(raw))
+                logger.info(
+                    "[%s] Saved -> %s (%d bytes)", self.exchange_id, dest, len(raw)
+                )
                 return FetchResult(
                     exchange_id=self.exchange_id,
                     operator=self.operator,
@@ -83,10 +117,45 @@ class BaseFetcher(ABC):
                     file_path=dest,
                     http_status=status,
                 )
+            except requests.HTTPError as exc:
+                status_code = exc.response.status_code if exc.response is not None else 0
+                if status_code == 403:
+                    # 403 is not a transient error — retrying won't help.
+                    # Log clearly and bail rather than burning all retries.
+                    logger.error(
+                        "[%s] 403 Forbidden fetching %s — the site is blocking automated "
+                        "requests. Check that the URL in exchanges.yaml is current and "
+                        "accessible in a browser. If the URL is correct, the exchange may "
+                        "require a session cookie; try downloading the file manually and "
+                        "placing it at %s.",
+                        self.exchange_id, self.fee_url, dest,
+                    )
+                    return FetchResult(
+                        exchange_id=self.exchange_id,
+                        operator=self.operator,
+                        url=self.fee_url,
+                        fetched_at=fetched_at,
+                        content_type=self.schedule_type,
+                        raw_bytes=b"",
+                        file_path=dest,
+                        http_status=403,
+                        error=(
+                            f"403 Forbidden — {self.fee_url}\n"
+                            f"Open that URL in a browser to confirm it's valid, then "
+                            f"download the file and place it at {dest} for a manual run."
+                        ),
+                    )
+                logger.warning(
+                    "[%s] Attempt %d HTTP %s: %s",
+                    self.exchange_id, attempt, status_code, exc,
+                )
             except Exception as exc:
-                logger.warning("[%s] Attempt %d failed: %s", self.exchange_id, attempt, exc)
-                if attempt < MAX_RETRIES:
-                    time.sleep(2 ** attempt)
+                logger.warning(
+                    "[%s] Attempt %d failed: %s", self.exchange_id, attempt, exc
+                )
+
+            if attempt < MAX_RETRIES:
+                time.sleep(2 ** attempt)
 
         return FetchResult(
             exchange_id=self.exchange_id,
@@ -114,7 +183,6 @@ class BaseFetcher(ABC):
         ext = "pdf" if self.schedule_type == "pdf" else "html"
         return RAW_DIR / self.exchange_id / f"{self.exchange_id}_{stamp}.{ext}"
 
-    # Subclasses may override to handle JS-rendered pages etc.
     @abstractmethod
     def extract_text(self, result: FetchResult) -> str:
         """Convert raw bytes to plain text for the AI extraction step."""
