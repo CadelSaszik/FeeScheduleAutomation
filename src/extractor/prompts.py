@@ -13,16 +13,25 @@ OUTPUT_SCHEMA = """
 
 Work in two passes before producing output:
 
-**Pass 1 — Footnote catalog.**
-Read through the entire fee schedule and collect EVERY footnote, endnote, asterisk note,
-dagger note, or numbered/lettered qualifier you find. Do this before extracting any rates.
-Footnotes often modify or override the headline rate in a table — you must understand them
-before reading the numbers.
+**Pass 1 — Footnote catalog (MANDATORY — do not skip).**
+Before reading any rate, scan the ENTIRE document — every page, every table header, every
+bottom-of-page section, every asterisk, superscript, dagger, numbered note, lettered note,
+or inline qualifier. U.S. options exchange fee schedules almost universally qualify every
+rate with footnotes describing volume tiers, program eligibility, capping rules, minimum
+fees, or conditional waivers. Missing a footnote means the extracted rate may be wrong.
+
+Collect EVERY footnote into the "footnotes" array before proceeding to Pass 2.
 
 **Pass 2 — Fee row extraction.**
-For each fee row, extract the rate from the table and note which footnotes (if any) apply
-to that row. If a footnote changes the effective rate, use the footnote-adjusted rate AND
-record both the original table rate and the footnote in the notes field.
+For each fee row, extract the rate from the table. Then explicitly check: does any footnote
+from Pass 1 apply to this specific row? Consider column-level footnotes, row-level
+superscripts, section-wide qualifiers, and any notes at the bottom of the table. Add every
+applicable footnote ref to `footnote_refs`. If no footnote applies, verify that before
+leaving `footnote_refs` empty — an empty array is a strong claim.
+
+If a footnote changes the effective rate, use the BASE table rate (not the adjusted rate),
+record the footnote in `footnote_refs`, and explain the modification in `notes`. This
+preserves the headline rate for diffing while documenting the true effective condition.
 
 ## Output format
 
@@ -82,19 +91,46 @@ Each flag:
 - "Solicitation" covers SAM and similar solicited order mechanisms.
 - Do NOT conflate CBOE SUM with a Flash Auction — label it Solicitation.
 - If a field is genuinely absent from the fee schedule, use null — never use 0 as a substitute.
-- Emit one row per unique (ticker_class, sec_type, account_type, trade_type, liq_code) combination.
+- Emit one row per SOURCE ENTRY (one per CSV line, one per table row, one per fee code). Each
+  liq_code must appear as its own separate row. NEVER consolidate multiple codes into one row.
+- Use ONLY values that appear explicitly in the source document. Do NOT infer or use prior
+  knowledge to fill in rates that are not stated for that specific code/row.
+- Each row should populate EXACTLY ONE primary rate field based on the liquidity direction.
+  Leave all other rate fields null unless the source explicitly states them.
 - Extract only CUST and PCUST rows; skip Market Maker, Firm, BD, JBO.
 
 ## Confidence guidelines
 
-- **high**: Rate is clearly stated in a table cell, no ambiguous footnotes apply.
-- **medium**: Rate requires interpretation (e.g. footnote says "applies when volume > X"),
-  or the table layout made the mapping uncertain.
-- **low**: Rate is inferred, the footnote substantially modifies it, or the source table
-  was ambiguous/badly formatted. A low-confidence row MUST have a confidence_reason.
+**high** requires ALL of the following to be true:
+1. The rate value is explicitly and unambiguously stated in a specific table cell.
+2. `source_page` and `source_section` are populated with a precise location reference.
+3. You have checked whether any footnote in the document applies to this row. If ANY
+   footnote applies, it MUST be listed in `footnote_refs`. A row with footnote_refs=[]
+   can only be high confidence if you have confirmed that no footnote in the document
+   modifies, qualifies, conditions, or caps this specific rate.
+4. The footnotes listed in `footnote_refs` do NOT substantially change the effective rate
+   (e.g. they are informational only, or describe a program the customer may not qualify for).
 
-Flag any row where you are genuinely unsure whether the number is correct. It is better
-to flag something as low confidence than to silently emit a wrong number.
+**medium**: Use whenever ANY of the following is true:
+- A footnote applies to this row (even an informational one) — record it in footnote_refs
+  and explain in confidence_reason what the footnote says.
+- The source citation is incomplete (missing page or section).
+- The rate required interpretation or mapping judgment.
+- You are uncertain whether a footnote applies to this row.
+- The document has footnotes but you could not determine which ones apply here.
+
+**low**: Use when:
+- A footnote substantially changes the effective rate (e.g. "rate is waived if...",
+  "subject to a minimum of $X", conditional on volume tier or program membership).
+- The rate is inferred rather than explicitly stated.
+- The source table layout was ambiguous or badly formatted.
+- A low-confidence row MUST have a confidence_reason explaining what is uncertain.
+
+**Default to medium when unsure.** It is far better to mark a row medium/low than to
+silently emit an incorrect or unqualified number as high confidence.
+
+In practice: almost every fee schedule row will have at least one applicable footnote.
+A high-confidence row is the exception, not the rule.
 """
 
 # ---------------------------------------------------------------------------
@@ -144,17 +180,45 @@ Map description keywords to schema fields as follows:
 - "Remove", "Taker", "Take" → take_rate
 - If the description implies a single Electronic rate with no Add/Remove qualifier, put it in take_rate
 
-**liq_code:** use the Code column value (e.g. "CA", "NP")
+**liq_code:** REQUIRED. Always set this to the EXACT Code column value for that row (e.g. "CA",
+"NC", "BC", "ZA"). This field must NEVER be null for CBOE CSV input.
 
 **source_section:** use the Description field verbatim as the source reference.
 **source_page:** write "CSV row: <Code>" (e.g. "CSV row: CA").
-**footnote_refs:** [] (CSV has no footnotes; footnote catalog will be empty)
-**confidence:** high for rows where the description unambiguously maps to the schema; medium if the mapping required interpretation.
+**footnote_refs:** [] — the CSV export strips all footnotes from the underlying fee schedule.
+**confidence:** ALWAYS "medium" for CBOE CSV rows. The CBOE fee schedule website contains
+footnotes and conditional qualifiers for nearly every rate (volume thresholds, program
+eligibility, capping rules, etc.) that are absent from this CSV export. No row can be
+confirmed high-confidence without reviewing those footnotes.
+**confidence_reason:** for every row, set this to: "CBOE CSV export omits footnotes; the
+full fee schedule at cboe.com/us/options/membership/fee_schedule/ may contain footnotes
+that qualify or modify this rate."
+
+## Rate field assignment — use EXACTLY ONE field per row
+
+For each CSV row you emit, only one rate field should be non-null (others stay null):
+- "Add", "adds liquidity", "Maker" → **make_rate** = Fee column value
+- "Remove", "removes liquidity", "Taker" → **take_rate** = Fee column value
+- AIM/PI Agency (customer initiating the auction) → **auction_init_rate** = Fee column value;
+  set trade_type = "PI". Leave make_rate and take_rate null.
+- AIM/PI Response or AIM Contra → **auction_resp_rate** = Fee column value; trade_type = "PI"
+- SAM Agency (customer initiating) → **auction_init_rate** = Fee; trade_type = "Solicitation"
+- SAM Contra or Response → **auction_resp_rate** = Fee; trade_type = "Solicitation"
+- QCC Agency → **auction_init_rate** = Fee; trade_type = "Solicitation"
+- QCC Contra → **auction_resp_rate** = Fee; trade_type = "Solicitation"
+- "AIM Cancel", "Breakup" → **breakup_rate** = Fee; trade_type = "PI"
+- No Add/Remove qualifier (plain trade) → **take_rate** = Fee column value
+- Routed orders → **take_rate** = Fee column value
 
 ## Important rules
+- **One row per CSV line**: for each CUST/PCUST CSV row, emit exactly ONE output row with the
+  liq_code set to that row's Code value. Never merge two codes into one row.
+- **Use only CSV values**: the rate field must come from the Fee column of that specific CSV
+  row. Never substitute rates from memory or training data.
 - Extract only CUST and PCUST rows; skip Market Maker, Firm, BD, JBO rows entirely.
 - Do NOT conflate CBOE SUM/SAM with a Flash Auction — it is Solicitation.
-- AIM breakup fee (if present, often described as "AIM Cancel") → breakup_rate.
+- AIM breakup fee (if present, often described as "AIM Cancel") → breakup_rate. Only emit
+  this if a code explicitly describes a cancel or breakup fee.
 - Fee values are already in dollars per contract — do not divide or convert.
 """ + OUTPUT_SCHEMA,
 
@@ -168,8 +232,12 @@ Nasdaq operates six U.S. options exchanges: NOM, BX, PHLX, ISE, Gemini, and Merc
 - Solicited Order Mechanisms map to "Solicitation"
 - Complex orders labeled "Complex" or "COMB" — map to sec_type "MLEG"
 - Some exchanges use "C" (Customer) and "NC" (Non-Customer/Professional Customer)
-- HTML footnotes often appear as superscript numbers or asterisks inline in table cells — read the full page for their definitions
-- Watch for fee caps and volume thresholds described in footnotes that modify stated rates
+- HTML footnotes often appear as superscript numbers or asterisks inline in table cells — these
+  MUST be catalogued in Pass 1 and linked to rows in `footnote_refs`
+- Nasdaq schedules routinely contain volume-based rebate tiers, caps, program eligibility
+  requirements, and conditional waivers in footnotes — these are critical to completeness
+- If the HTML appears to be a login/navigation page with no fee tables, emit zero rows and add
+  an error flag explaining the content appears to be a JS-rendered page requiring a browser
 
 Extract only Customer (CUST) and Professional Customer (PCUST) rows.
 """ + OUTPUT_SCHEMA,
@@ -181,8 +249,12 @@ NYSE operates NYSE ARCA Options and NYSE American Options (formerly AMEX). Key f
 - Only map rows explicitly labeled "Professional Customer" to PCUST; do not infer it from "Non-Customer Firm"
 - Price Improvement auction on NYSE ARCA is called "Customer Best Execution Auction" (CUBE) — map to "PI"
 - NYSE American has a Customer Best Execution mechanism — map to "PI" or "Solicitation" per context
-- Footnotes on NYSE schedules frequently describe volume-based rebate tiers and program qualifications
-- Be especially careful with footnotes that say "subject to" or "provided that" — these conditionally modify rates
+- NYSE footnotes use asterisks, numbered notes, and lettered qualifiers extensively — catalog ALL of them
+- Footnotes on NYSE schedules frequently describe volume-based rebate tiers and program qualifications.
+  A footnote saying "subject to" or "provided that" changes the effective rate — record it in footnote_refs
+  and document the condition in notes; mark the row medium or low confidence accordingly
+- NYSE PDFs are structured documents; look for footnote markers both inline (superscripts in table cells)
+  and at the bottom of each page/section
 
 Extract only Customer (CUST) and Professional Customer (PCUST) rows.
 """ + OUTPUT_SCHEMA,
@@ -195,7 +267,9 @@ MIAX operates four U.S. options exchanges: MIAX, MIAX Pearl, MIAX Emerald, and M
 - Price Improvement auction is called "MIAX Price Improvement Mechanism" (M-PIM) — map to "PI"
 - Solicited Order Mechanism maps to "Solicitation"
 - Rebates are presented as negative values in some MIAX tables — adjust sign so rebates are POSITIVE in output
-- Footnotes on MIAX schedules often qualify rebates with volume tiers or program membership requirements
+- MIAX footnotes frequently contain volume tier thresholds, program membership requirements, and rebate
+  caps. These appear as numbered or lettered notes at the end of each section and at page bottoms.
+  Catalog ALL of them in Pass 1; they almost always apply to CUST/PCUST rows.
 - MIAX Sapphire is the newest exchange and may have a shorter or simplified fee schedule
 
 Extract only Customer/Priority Customer (CUST) and Professional Customer (PCUST) rows.
@@ -208,7 +282,9 @@ BOX is operated by BOX Exchange LLC. Key format notes:
 - "Public Customer" = CUST; "Professional Customer" or "Public Customer >99 contracts/day" = PCUST
 - Price Improvement auctions: PIP (Price Improvement Period) and BIM (BOX Improvement Mechanism) — both map to "PI"
 - BOX uses "Maker" and "Taker" labels — map to make_rate and take_rate respectively
-- Footnotes on BOX schedules often describe payment-for-order-flow arrangements that are separate from the base rate
+- BOX footnotes describe payment-for-order-flow arrangements, volume thresholds, and conditional
+  credits — catalog every footnote, asterisk, and superscript in Pass 1. They are not cosmetic;
+  they often qualify whether a rate applies and under what conditions.
 
 Extract only Customer (CUST) and Professional Customer (PCUST) rows.
 """ + OUTPUT_SCHEMA,
@@ -216,11 +292,13 @@ Extract only Customer (CUST) and Professional Customer (PCUST) rows.
     "memx": """You are a financial data extraction specialist analyzing the MEMX Options exchange fee schedule.
 
 MEMX is a newer exchange. Key format notes:
-- Fee schedule may be HTML or PDF
+- Fee schedule may be HTML, PDF, or CSV depending on what was fetched
 - "Customer" = CUST; "Professional Customer" = PCUST
 - Make/Take model clearly labeled
 - Price Improvement auction mechanism if present maps to "PI"
-- Footnotes may describe new-exchange promotional rates or temporary fee waivers — flag these as medium confidence
+- MEMX footnotes often describe promotional rates, temporary waivers, and program eligibility
+  requirements — catalog ALL of them in Pass 1 and link to rows. Promotional or time-limited
+  rates must be flagged as medium confidence with the condition noted.
 
 Extract only Customer (CUST) and Professional Customer (PCUST) rows.
 """ + OUTPUT_SCHEMA,

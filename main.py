@@ -171,15 +171,20 @@ def cmd_preflight(exchange_ids: list[str] | None) -> None:
 
         # Check for signs the page returned an error/login wall instead of fee data
         for phrase in ("access denied", "403 forbidden", "sign in", "login required",
-                       "page not found", "404", "error occurred"):
+                       "page not found", "404", "error occurred",
+                       "session expiring", "my nasdaq analyst", "listing center"):
             if phrase in text_lower[:2000]:
-                warnings.append(f"response may be an error page (contains '{phrase}')")
+                warnings.append(f"response may be a JS login wall (contains '{phrase}')")
 
         # Check for expected fee-related keywords
-        has_fee_signal = any(kw in text_lower for kw in
-                             ("fee", "rate", "rebate", "customer", "penny", "code"))
-        if not has_fee_signal:
-            warnings.append("no fee-related keywords found — content may not be a fee schedule")
+        fee_keywords = ("transaction fee", "per contract", "rebate", "maker", "taker",
+                        "fee", "rate", "customer", "penny", "code")
+        fee_hits = sum(1 for kw in fee_keywords if kw in text_lower)
+        if fee_hits < 2:
+            warnings.append(
+                "very few fee-related keywords found — content may be a JS-rendered page "
+                "that requires a browser (Playwright) to load actual fee data"
+            )
 
         if fetch_result.content_type == "csv":
             # CSV-specific: check it has at least 3 columns and multiple rows
@@ -260,6 +265,7 @@ def cmd_schedule() -> None:
 
 
 def cmd_report(trade_type_filter: str | None = None) -> None:
+    import json as _json
     from src.persistence.db import Database
     from tabulate import tabulate
 
@@ -283,6 +289,11 @@ def cmd_report(trade_type_filter: str | None = None) -> None:
     for r in sorted(rows, key=sort_key):
         if trade_type_filter and r.get("trade_type") != trade_type_filter:
             continue
+        fn_refs = _json.loads(r.get("footnote_refs") or "[]")
+        conf = r.get("confidence", "high")
+        # Confidence indicator: blank=high, ?=medium, !=low
+        conf_mark = "" if conf == "high" else ("?" if conf == "medium" else "!")
+        fn_mark = ",".join(fn_refs) if fn_refs else ""
         table_rows.append([
             (r.get("exchange_id") or "").upper(),
             r.get("account_type") or "",
@@ -295,15 +306,18 @@ def cmd_report(trade_type_filter: str | None = None) -> None:
             _fmt(r.get("auction_init_rate")),
             _fmt(r.get("auction_resp_rate")),
             _fmt(r.get("breakup_rate")),
+            conf_mark,
+            fn_mark,
         ])
 
     headers = ["Exchange", "AcctType", "Class", "SecType", "TradeType", "LiqCode",
-               "Make", "Take", "AuctInit", "AuctResp", "Breakup"]
+               "Make", "Take", "AuctInit", "AuctResp", "Breakup", "Cf", "FnRefs"]
     print(tabulate(table_rows, headers=headers, tablefmt="outline"))
     exchange_count = len(set(r["exchange_id"] for r in rows))
     shown = len(table_rows)
     filter_note = f" ({trade_type_filter} only)" if trade_type_filter else ""
     print(f"\n{shown} rows shown{filter_note} | {len(rows)} total rows across {exchange_count} exchange(s)")
+    print("Cf: blank=high confidence, ?=medium, !=low  |  FnRefs: applicable footnote IDs")
 
 
 def cmd_review() -> None:
@@ -361,10 +375,30 @@ def cmd_review() -> None:
 
 def cmd_footnotes(exchange_id: str) -> None:
     """Print all footnotes extracted from the latest run for an exchange."""
+    import yaml
     from src.persistence.db import Database
+
+    with open("config/exchanges.yaml") as f:
+        cfg = yaml.safe_load(f)
+    ex = next((e for e in cfg["exchanges"] if e["id"] == exchange_id), None)
 
     db = Database()
     footnotes = db.get_footnotes(exchange_id)
+
+    # Explain the CBOE CSV footnote limitation
+    if not footnotes and ex and ex.get("operator") == "cboe":
+        print(
+            f"\nNo footnotes stored for {exchange_id.upper()}.\n\n"
+            f"CBOE exchanges are fetched via a CSV export endpoint that strips all footnotes\n"
+            f"from the underlying fee schedule. The CBOE fee schedule website at\n"
+            f"  cboe.com/us/options/membership/fee_schedule/{exchange_id}/\n"
+            f"contains footnotes qualifying volume thresholds, program eligibility, and rate\n"
+            f"caps that are NOT reflected in the CSV. This is why all CBOE rows are marked\n"
+            f"medium confidence — the CSV alone is insufficient for full footnote coverage.\n\n"
+            f"To review CBOE footnotes manually, visit the fee schedule page above."
+        )
+        return
+
     if not footnotes:
         print(f"No footnotes found for {exchange_id.upper()}. Run --run-now first.")
         return
