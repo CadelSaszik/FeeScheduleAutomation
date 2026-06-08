@@ -36,8 +36,8 @@ exchanges:
     name: MIAX Options
     mic: XMIO
     operator: miax
-    # Domain migrated from miaxoptions.com to miaxglobal.com; filename includes effective date
-    fee_url: https://www.miaxglobal.com/sites/default/files/fee_schedule-files/MIAX_Options_Fee_Schedule_04012026.pdf
+    # Landing page — fetcher discovers current date-stamped PDF URL at runtime (miaxglobal.com)
+    fee_url: https://www.miaxglobal.com/markets/us-options/miax-options/fees
     schedule_type: pdf
     enabled: true
 
@@ -45,7 +45,7 @@ exchanges:
     name: MIAX Pearl Options
     mic: MPRL
     operator: miax
-    fee_url: https://www.miaxglobal.com/sites/default/files/fee_schedule-files/MIAX_Pearl_Options_Fee_Schedule_02012026.pdf
+    fee_url: https://www.miaxglobal.com/markets/us-options/pearl-options/fees
     schedule_type: pdf
     enabled: true
 
@@ -53,7 +53,7 @@ exchanges:
     name: MIAX Emerald
     mic: EMLD
     operator: miax
-    fee_url: https://www.miaxglobal.com/sites/default/files/fee_schedule-files/MIAX__Emerald__Fee__Schedule__04012026.pdf
+    fee_url: https://www.miaxglobal.com/markets/us-options/emerald-options/fees
     schedule_type: pdf
     enabled: true
 
@@ -61,7 +61,7 @@ exchanges:
     name: MIAX Sapphire
     mic: SPHR
     operator: miax
-    fee_url: https://www.miaxglobal.com/sites/default/files/fee_schedule-files/MIAX_Sapphire_Fee_Schedule_02012026.pdf
+    fee_url: https://www.miaxglobal.com/markets/us-options/sapphire-options/fees
     schedule_type: pdf
     enabled: true
 
@@ -69,7 +69,7 @@ exchanges:
     name: Nasdaq Options Market
     mic: XNDQ
     operator: nasdaq
-    fee_url: https://listingcenter.nasdaq.com/rulebook/nasdaq/rules/nasdaq-options-fees
+    fee_url: https://listingcenter.nasdaq.com/rulebook/nasdaq/rules/nasdaq-options-7
     schedule_type: html
     enabled: true
 
@@ -77,7 +77,8 @@ exchanges:
     name: Nasdaq BX Options
     mic: XBXO
     operator: nasdaq
-    fee_url: https://listingcenter.nasdaq.com/rulebook/bx/rules/bx-options-fees
+    # Returns HTTP 200 but only page chrome — fee tables require JS/session. Needs Playwright.
+    fee_url: https://listingcenter.nasdaq.com/rulebook/bx/rules/bx-options-7
     schedule_type: html
     enabled: true
 
@@ -85,7 +86,7 @@ exchanges:
     name: Nasdaq PHLX
     mic: XPHO
     operator: nasdaq
-    fee_url: https://listingcenter.nasdaq.com/rulebook/phlx/rules/phlx-options-fees
+    fee_url: https://listingcenter.nasdaq.com/rulebook/phlx/rules/phlx-options-7
     schedule_type: html
     enabled: true
 
@@ -93,7 +94,7 @@ exchanges:
     name: Nasdaq ISE
     mic: XISX
     operator: nasdaq
-    fee_url: https://listingcenter.nasdaq.com/rulebook/ise/rules/ise-options-fees
+    fee_url: https://listingcenter.nasdaq.com/rulebook/ise/rules/ise-options-7
     schedule_type: html
     enabled: true
 
@@ -101,7 +102,8 @@ exchanges:
     name: Nasdaq Gemini
     mic: GMNI
     operator: nasdaq
-    fee_url: https://listingcenter.nasdaq.com/rulebook/gemini/rules/gemini-options-fees
+    # Returns HTTP 200 but only page chrome — fee tables require JS/session. Needs Playwright.
+    fee_url: https://listingcenter.nasdaq.com/rulebook/gemini/rules/gemini-options-7
     schedule_type: html
     enabled: true
 
@@ -109,7 +111,8 @@ exchanges:
     name: Nasdaq Mercury
     mic: MCRY
     operator: nasdaq
-    fee_url: https://listingcenter.nasdaq.com/rulebook/mercury/rules/mercury-options-fees
+    # Returns HTTP 200 but only page chrome — fee tables require JS/session. Needs Playwright.
+    fee_url: https://listingcenter.nasdaq.com/rulebook/mercury/rules/mercury-options-7
     schedule_type: html
     enabled: true
 
@@ -117,7 +120,6 @@ exchanges:
     name: NYSE ARCA Options
     mic: ARCO
     operator: nyse
-    # Filename case changed: NYSE_Arca_Options (not NYSE_ARCA_Options)
     fee_url: https://www.nyse.com/publicdocs/nyse/markets/arca-options/NYSE_Arca_Options_Fee_Schedule.pdf
     schedule_type: pdf
     enabled: true
@@ -134,8 +136,8 @@ exchanges:
     name: BOX Options Exchange
     mic: XBOX
     operator: box
-    # Domain changed from boxoptions.com to boxexchange.com; filename includes date
-    fee_url: https://boxexchange.com/assets/BOX-Fee-Schedule-as-of-October-1-2025.pdf
+    # Landing page — fetcher discovers current date-stamped PDF URL at runtime (boxexchange.com)
+    fee_url: https://boxexchange.com/regulatory/fees/
     schedule_type: pdf
     enabled: true
 
@@ -143,7 +145,6 @@ exchanges:
     name: MEMX Options
     mic: MXOP
     operator: memx
-    # Landing page; fetcher scrapes for linked CSV (or PDF) on the page
     fee_url: https://info.memxtrading.com/us-options-trading-resources/us-options-fee-schedule/
     schedule_type: html
     enabled: true
