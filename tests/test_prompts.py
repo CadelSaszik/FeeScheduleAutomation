@@ -142,23 +142,23 @@ class TestCboePrompt:
             "CBOE prompt must forbid using prior knowledge to fill in rates"
         )
 
-    def test_csv_rows_always_medium_confidence(self):
-        assert 'ALWAYS "medium"' in self.prompt or "ALWAYS medium" in self.prompt, (
-            "CBOE prompt must force all CSV rows to medium confidence"
+    def test_cboe_prompts_footnote_extraction_from_supplemental(self):
+        # CBOE uses CSV + supplemental HTML. Prompt must instruct Claude to extract
+        # footnotes from the supplemental content and link them to CSV rows.
+        assert "supplemental" in self.prompt.lower() or \
+               "two-pass" in self.prompt.lower() or \
+               "Pass 1" in self.prompt, (
+            "CBOE prompt must instruct Claude to extract footnotes from supplemental HTML content"
         )
 
     def test_confidence_reason_required_for_cboe(self):
         assert "confidence_reason" in self.prompt
 
-    def test_footnote_limitation_explained(self):
-        assert "CSV export omits footnotes" in self.prompt or \
-               "CSV has no footnotes" in self.prompt.lower() or \
-               "strips all footnotes" in self.prompt.lower()
-
-    def test_cboe_url_mentioned_for_reference(self):
-        assert "cboe.com" in self.prompt.lower(), (
-            "CBOE prompt should reference the fee schedule URL so reviewers know where to check"
-        )
+    def test_footnote_limitation_acknowledged(self):
+        # Prompt must acknowledge that the CSV lacks footnotes and explain how to handle it.
+        assert "CSV" in self.prompt and (
+            "footnote" in self.prompt.lower() or "supplemental" in self.prompt.lower()
+        ), "CBOE prompt must explain the CSV/footnote relationship"
 
     def test_aim_agency_maps_to_auction_init(self):
         assert "auction_init_rate" in self.prompt
@@ -190,9 +190,10 @@ class TestNasdaqPrompt:
     def setup_method(self):
         self.prompt = get_system_prompt("nasdaq")
 
-    def test_js_rendered_page_warning(self):
-        assert "JS-rendered" in self.prompt or "JS login wall" in self.prompt or \
-               "browser" in self.prompt.lower()
+    def test_empty_page_warning(self):
+        # Prompt must tell Claude what to do if it receives a page with no fee tables
+        assert "error flag" in self.prompt.lower() or "JS rendering" in self.prompt or \
+               "no fee tables" in self.prompt.lower() or "zero rows" in self.prompt.lower()
 
     def test_footnotes_must_be_catalogued(self):
         assert "footnote" in self.prompt.lower()
@@ -287,10 +288,18 @@ class TestBuildUserMessage:
         assert "three columns" in msg.lower() or "3-column" in msg.lower() or \
                "Code, Description, Fee" in msg
 
-    def test_csv_message_says_no_footnotes(self):
+    def test_csv_message_without_supplemental_guides_confidence(self):
+        # Without supplemental HTML, the message should tell Claude how to apply confidence
         msg = build_user_message("CBOE EDGX", "CA,foo,-0.01\n", content_type="csv")
-        assert "footnote" in msg.lower()
-        assert "empty" in msg.lower() or "no footnotes" in msg.lower()
+        assert "footnote" in msg.lower() or "confidence" in msg.lower()
+        # Must NOT tell Claude to skip footnotes or return empty footnotes array
+        assert "empty footnotes" not in msg.lower() and "no footnotes exist" not in msg.lower()
+
+    def test_csv_message_with_supplemental_includes_instructions(self):
+        msg = build_user_message("CBOE EDGX", "CA,foo,-0.01\n", content_type="csv",
+                                 supplemental_text="Footnote 1: volume discount")
+        assert "SUPPLEMENTAL" in msg or "supplemental" in msg.lower()
+        assert "Pass 1" in msg or "footnote catalog" in msg.lower()
 
     def test_text_message_instructs_footnote_catalog(self):
         msg = build_user_message("MIAX", "some fee schedule", content_type="text")

@@ -32,7 +32,7 @@ HEADERS = {
         "application/pdf,image/avif,image/webp,image/apng,*/*;q=0.8"
     ),
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate",  # omit 'br' — requests can't decode Brotli without the brotli package
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
     "Sec-Fetch-Dest": "document",
@@ -60,11 +60,12 @@ class FetchResult:
     operator: str
     url: str
     fetched_at: datetime
-    content_type: str          # "pdf" | "html"
+    content_type: str          # "pdf" | "html" | "csv"
     raw_bytes: bytes
     file_path: Path
     http_status: int
     error: Optional[str] = None
+    supplemental_text: str = ""  # footnote content from a secondary source (e.g. HTML page alongside CSV)
 
     @property
     def ok(self) -> bool:
