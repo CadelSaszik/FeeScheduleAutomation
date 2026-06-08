@@ -1,15 +1,20 @@
 """NASDAQ family fetcher: NOM, BX, PHLX, ISE, Gemini, Mercury.
 
-NASDAQ fee pages are HTML. We attempt to fetch them directly; if the
-page requires JS rendering the raw HTML still contains the table data
-as server-side HTML in most cases.
+Nasdaq fee pages are server-side rendered HTML on listingcenter.nasdaq.com.
+Footnote markers appear as <span class="superscript">N</span> inside table
+cells.  Footnote definitions appear below each table as text in the format
+"[N] Definition text..."  We render superscripts explicitly so the AI can
+match markers to definitions.
+
+URL pattern: .../rulebook/<exchange>/rules/<exchange>-options-7
 """
 
 from __future__ import annotations
 
 import logging
+import re
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from .base import BaseFetcher, FetchResult
 
@@ -23,26 +28,52 @@ class NasdaqFetcher(BaseFetcher):
         return _html_to_text(result.raw_bytes, result.exchange_id)
 
 
+def _cell_text(cell: Tag) -> str:
+    """Extract cell text, converting <span class="superscript"> to ^N^ marker."""
+    parts = []
+    for node in cell.children:
+        if isinstance(node, Tag):
+            if "superscript" in node.get("class", []):
+                parts.append(f"^{node.get_text(strip=True)}^")
+            else:
+                parts.append(node.get_text(strip=True))
+        else:
+            text = str(node).strip()
+            if text:
+                parts.append(text)
+    return " ".join(p for p in parts if p)
+
+
 def _html_to_text(data: bytes, exchange_id: str) -> str:
     try:
         soup = BeautifulSoup(data, "lxml")
 
-        # Remove nav, footer, script, style noise
+        # Remove chrome — keep only content area
         for tag in soup.find_all(["script", "style", "nav", "footer", "header"]):
             tag.decompose()
 
-        # Render tables explicitly so the AI can read them cleanly
-        parts = []
+        # Render tables with superscript footnote markers preserved as ^N^
+        table_blocks: list[str] = []
         for table in soup.find_all("table"):
             rows = []
             for tr in table.find_all("tr"):
-                cells = [td.get_text(strip=True) for td in tr.find_all(["th", "td"])]
+                cells = [_cell_text(td) for td in tr.find_all(["th", "td"])]
                 rows.append("\t".join(cells))
-            parts.append("[TABLE]\n" + "\n".join(rows) + "\n[/TABLE]")
+            table_blocks.append("[TABLE]\n" + "\n".join(rows) + "\n[/TABLE]")
 
-        # Also grab remaining text
+        # Full body text — captures footnote definitions below tables
+        # (format: "[N](#anchor) Definition text" or plain numbered list)
         body_text = soup.get_text(separator="\n", strip=True)
-        parts.insert(0, body_text)
+
+        # Label footnote definition paragraphs for Claude's Pass 1
+        # Nasdaq footnote defs look like "[3] Some text..." or "3. Some text..."
+        annotated_body = re.sub(
+            r"(?m)^(\[?\d+\]?\.?\s+)(.{20,})",
+            r"[FOOTNOTE DEF] \1\2",
+            body_text,
+        )
+
+        parts = [annotated_body] + table_blocks
         return "\n\n".join(parts)
     except Exception as exc:
         logger.error("[%s] HTML extraction error: %s", exchange_id, exc)

@@ -124,7 +124,11 @@ def run_exchange(
 
     # 3. AI (or mock) extraction
     content_type = "csv" if (fetch_result is not None and fetch_result.content_type == "csv") else "text"
-    extraction = extractor.extract(exchange_id, operator, exchange_name, fee_text, content_type=content_type)
+    supplemental = fetch_result.supplemental_text if fetch_result is not None else ""
+    extraction = extractor.extract(
+        exchange_id, operator, exchange_name, fee_text,
+        content_type=content_type, supplemental_text=supplemental,
+    )
     db.finish_run(run_id, extraction)
 
     if not extraction.ok:

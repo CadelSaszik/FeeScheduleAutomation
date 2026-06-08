@@ -185,14 +185,23 @@ Map description keywords to schema fields as follows:
 
 **source_section:** use the Description field verbatim as the source reference.
 **source_page:** write "CSV row: <Code>" (e.g. "CSV row: CA").
-**footnote_refs:** [] — the CSV export strips all footnotes from the underlying fee schedule.
-**confidence:** ALWAYS "medium" for CBOE CSV rows. The CBOE fee schedule website contains
-footnotes and conditional qualifiers for nearly every rate (volume thresholds, program
-eligibility, capping rules, etc.) that are absent from this CSV export. No row can be
-confirmed high-confidence without reviewing those footnotes.
-**confidence_reason:** for every row, set this to: "CBOE CSV export omits footnotes; the
-full fee schedule at cboe.com/us/options/membership/fee_schedule/ may contain footnotes
-that qualify or modify this rate."
+
+**Footnotes:** The CSV export does not contain footnote text, but a pre-parsed footnote
+manifest from the HTML fee schedule page is provided below the CSV data (when available).
+
+The manifest has this structure for each footnote:
+  FOOTNOTE N — APPLIES TO CODES: CA, PC, NC, ZA, ...
+  TEXT: Full footnote text including any tiered conditions, volume thresholds, or waivers.
+
+**How to use the manifest (mandatory for Pass 1 and Pass 2):**
+- Pass 1: Read every FOOTNOTE entry. Populate the `footnotes` array with ref=N, text=TEXT,
+  location="HTML footnotes section, position N".
+- Pass 2: For each CSV row, look up its Code in every FOOTNOTE's APPLIES TO CODES list.
+  If the code appears there, add that footnote number to `footnote_refs`. If the footnote
+  text describes a volume tier, conditional waiver, cap, or program eligibility requirement,
+  the row must be marked at most medium/low confidence and the condition explained in `notes`.
+
+If no footnote manifest is provided, apply normal confidence guidelines.
 
 ## Rate field assignment — use EXACTLY ONE field per row
 
@@ -224,81 +233,176 @@ For each CSV row you emit, only one rate field should be non-null (others stay n
 
     "nasdaq": """You are a financial data extraction specialist analyzing Nasdaq options exchange fee schedules.
 
-Nasdaq operates six U.S. options exchanges: NOM, BX, PHLX, ISE, Gemini, and Mercury. Key format notes:
-- Fee pages are HTML with structured tables organized by participant type
-- PHLX and ISE have tiered fee structures — use Tier 1 rates as the default, note it in "notes"
+Nasdaq operates six U.S. options exchanges: NOM, BX, PHLX, ISE, Gemini, and Mercury.
+
+## Input format
+
+Fee pages are server-side rendered HTML. The extractor pre-processes the HTML and delivers:
+- `[TABLE] ... [/TABLE]` blocks containing the fee rate tables
+- `^N^` markers inside table cells — these are **footnote reference numbers** (from
+  `<span class="superscript">N</span>` elements). When you see `$0.45 ^3^ ^8^`, it means
+  that rate is qualified by footnotes 3 and 8.
+- `[FOOTNOTE DEF] [N] Text...` lines — these are the footnote definitions (the numbered
+  paragraphs that appear below each table). Collect all of these in Pass 1.
+
+## Key format notes
+
+- PHLX and ISE have tiered fee structures — use Tier 1 rates as the default; note in "notes"
 - "Penny Pilot" classes are the equivalent of "Penny" elsewhere
-- Price Improvement auctions: PHLX = PIXL, ISE/Gemini = FleX, NOM = PRISM, BX = BOX Improvement Period — map all to "PI"
+- Price Improvement auctions: PHLX = PIXL, ISE/Gemini = FleX, NOM = PRISM — map all to "PI"
 - Solicited Order Mechanisms map to "Solicitation"
-- Complex orders labeled "Complex" or "COMB" — map to sec_type "MLEG"
+- Complex orders labeled "Complex" or "COMB" → sec_type = "MLEG"
 - Some exchanges use "C" (Customer) and "NC" (Non-Customer/Professional Customer)
-- HTML footnotes often appear as superscript numbers or asterisks inline in table cells — these
-  MUST be catalogued in Pass 1 and linked to rows in `footnote_refs`
-- Nasdaq schedules routinely contain volume-based rebate tiers, caps, program eligibility
-  requirements, and conditional waivers in footnotes — these are critical to completeness
-- If the HTML appears to be a login/navigation page with no fee tables, emit zero rows and add
-  an error flag explaining the content appears to be a JS-rendered page requiring a browser
+- Multiple footnote numbers may qualify a single cell: `$0.45 ^3^ ^8^` → footnote_refs: ["3","8"]
+- Footnotes routinely describe volume-based rebate tiers, caps, program eligibility, and
+  conditional waivers. Every `^N^` marker MUST appear in the footnote_refs of that row, and
+  its condition must be explained in notes or confidence_reason.
+- If the HTML appears to be a login/navigation page with no fee tables, emit zero rows and
+  add an error flag explaining the content appears to require JS rendering
+
+## Footnote handling (mandatory)
+
+Pass 1: Find every `[FOOTNOTE DEF]` line. Collect ref=N, text=definition, location="Below table".
+Pass 2: For each rate cell containing `^N^` markers, add N to that row's footnote_refs.
+        If the footnote text describes a conditional qualifier (volume tier, waiver, cap),
+        mark confidence medium or low and explain the condition in notes.
 
 Extract only Customer (CUST) and Professional Customer (PCUST) rows.
 """ + OUTPUT_SCHEMA,
 
     "nyse": """You are a financial data extraction specialist analyzing NYSE Group options exchange fee schedules.
 
-NYSE operates NYSE ARCA Options and NYSE American Options (formerly AMEX). Key format notes:
+NYSE operates NYSE ARCA Options and NYSE American Options (formerly AMEX).
+
+## Input format
+
+PDFs extracted by pdfplumber, delivered page-by-page with markers:
+  --- Page N ---
+  [TABLE] ... [/TABLE]   (pdfplumber table extraction of each fee table)
+  Remaining page text (includes footnotes at the bottom of each page)
+
+## Key format notes
+
 - PDFs organized by order type and participant capacity
-- Only map rows explicitly labeled "Professional Customer" to PCUST; do not infer it from "Non-Customer Firm"
-- Price Improvement auction on NYSE ARCA is called "Customer Best Execution Auction" (CUBE) — map to "PI"
-- NYSE American has a Customer Best Execution mechanism — map to "PI" or "Solicitation" per context
-- NYSE footnotes use asterisks, numbered notes, and lettered qualifiers extensively — catalog ALL of them
-- Footnotes on NYSE schedules frequently describe volume-based rebate tiers and program qualifications.
-  A footnote saying "subject to" or "provided that" changes the effective rate — record it in footnote_refs
-  and document the condition in notes; mark the row medium or low confidence accordingly
-- NYSE PDFs are structured documents; look for footnote markers both inline (superscripts in table cells)
-  and at the bottom of each page/section
+- Only map rows explicitly labeled "Professional Customer" to PCUST; do not infer from "Non-Customer Firm"
+- Price Improvement auction on NYSE ARCA = "Customer Best Execution Auction" (CUBE) → "PI"
+- NYSE American Customer Best Execution mechanism → "PI" or "Solicitation" per context
+
+## Footnote handling (mandatory — NYSE uses footnotes extensively)
+
+NYSE PDFs use numbered superscript markers inside table cells (e.g. "1", "2") AND asterisks.
+Footnote definitions appear at the bottom of each page, after the tables.
+
+Pass 1 — catalog every footnote from EVERY page:
+- Superscript numbers in table cells: the number appears inline in the pdfplumber text, immediately
+  after the rate value (e.g. "0.451" means rate 0.45 with superscript footnote 1).
+- Asterisks (*), daggers (†), and lettered notes (a, b, c) are also footnote markers.
+- Footnote text at page bottoms: these are the definitions. Capture all of them.
+- A footnote saying "subject to", "provided that", "minimum of", or "waived for" changes the
+  effective rate — the affected row must be medium or low confidence with the condition in notes.
+
+Pass 2 — link every footnote marker to its row:
+- For each table row, look at the cell text for inline number markers adjacent to rate values.
+- Add those numbers to footnote_refs. If the footnote is a conditional qualifier, explain it in notes.
 
 Extract only Customer (CUST) and Professional Customer (PCUST) rows.
 """ + OUTPUT_SCHEMA,
 
     "miax": """You are a financial data extraction specialist analyzing MIAX options exchange fee schedules.
 
-MIAX operates four U.S. options exchanges: MIAX, MIAX Pearl, MIAX Emerald, and MIAX Sapphire. Key format notes:
+MIAX operates four U.S. options exchanges: MIAX, MIAX Pearl, MIAX Emerald, and MIAX Sapphire.
+
+## Input format
+
+PDFs extracted by pdfplumber, delivered page-by-page with markers:
+  --- Page N ---
+  [TABLE] ... [/TABLE]   (pdfplumber table extraction)
+  Remaining page text (includes footnotes at page bottom)
+
+## Key format notes
+
 - PDFs organized by transaction type then participant (Priority Customer, Professional)
 - "Priority Customer" = CUST; "Professional Customer" or "Non-Priority Customer" = PCUST
-- Price Improvement auction is called "MIAX Price Improvement Mechanism" (M-PIM) — map to "PI"
-- Solicited Order Mechanism maps to "Solicitation"
-- Rebates are presented as negative values in some MIAX tables — adjust sign so rebates are POSITIVE in output
-- MIAX footnotes frequently contain volume tier thresholds, program membership requirements, and rebate
-  caps. These appear as numbered or lettered notes at the end of each section and at page bottoms.
-  Catalog ALL of them in Pass 1; they almost always apply to CUST/PCUST rows.
-- MIAX Sapphire is the newest exchange and may have a shorter or simplified fee schedule
+- M-PIM (MIAX Price Improvement Mechanism) → trade_type = "PI"
+- Solicited Order Mechanism → trade_type = "Solicitation"
+- Rebates are presented as negative values in some MIAX tables — adjust sign so rebates are POSITIVE
+
+## Footnote handling (mandatory — MIAX footnotes control nearly every CUST rate)
+
+MIAX PDFs use numbered and lettered markers in table cells. Footnotes appear at page bottoms
+and at the end of table sections.
+
+Pass 1 — catalog every footnote:
+- Numbered markers: appear directly in the pdfplumber cell text, adjacent to rate values
+  (e.g. "0.261,2" means rate 0.26 qualified by footnotes 1 and 2)
+- Lettered markers: (a), (b), etc. — same pattern
+- Footnote text: appears below the table on the same page or at the end of a section
+- Common MIAX footnote content: volume tier thresholds (ADV-based), program membership
+  requirements, rebate caps, and conditional waivers. Every CUST/PCUST rate is likely affected.
+
+Pass 2 — link markers to rows:
+- Extract the number/letter directly from cell text adjacent to the rate.
+- Add to footnote_refs. If the footnote describes a volume tier or cap, mark the row low/medium
+  and explain the condition in notes.
+
+- MIAX Sapphire is the newest exchange and may have a shorter fee schedule
 
 Extract only Customer/Priority Customer (CUST) and Professional Customer (PCUST) rows.
 """ + OUTPUT_SCHEMA,
 
     "box": """You are a financial data extraction specialist analyzing the BOX Options Exchange fee schedule.
 
-BOX is operated by BOX Exchange LLC. Key format notes:
-- Single PDF fee schedule, tables organized by participant type
+BOX is operated by BOX Exchange LLC.
+
+## Input format
+
+Single PDF extracted by pdfplumber, delivered page-by-page:
+  --- Page N ---
+  [TABLE] ... [/TABLE]
+  Remaining page text (footnotes at page bottom)
+
+## Key format notes
+
+- Tables organized by participant type
 - "Public Customer" = CUST; "Professional Customer" or "Public Customer >99 contracts/day" = PCUST
-- Price Improvement auctions: PIP (Price Improvement Period) and BIM (BOX Improvement Mechanism) — both map to "PI"
-- BOX uses "Maker" and "Taker" labels — map to make_rate and take_rate respectively
-- BOX footnotes describe payment-for-order-flow arrangements, volume thresholds, and conditional
-  credits — catalog every footnote, asterisk, and superscript in Pass 1. They are not cosmetic;
-  they often qualify whether a rate applies and under what conditions.
+- PIP (Price Improvement Period) and BIM (BOX Improvement Mechanism) → trade_type = "PI"
+- BOX uses "Maker" and "Taker" labels → make_rate and take_rate respectively
+
+## Footnote handling (mandatory — BOX footnotes qualify most rates)
+
+BOX PDFs use asterisks (*), numbered notes, and lettered notes (a, b, c) inline in table cells.
+Footnote definitions appear at the bottom of each page.
+
+Pass 1 — catalog every footnote:
+- Look for *, †, numbered superscripts, and lettered notes inside table cells
+- Footnote text at page bottoms: describes payment-for-order-flow arrangements, volume
+  thresholds, conditional credits, and program qualifications. These are NOT cosmetic —
+  they determine whether a rate applies at all and under what conditions.
+
+Pass 2 — for every rate cell with a footnote marker, add it to footnote_refs.
+If the footnote changes the effective rate or imposes a condition, mark medium/low confidence
+and explain the condition in notes.
 
 Extract only Customer (CUST) and Professional Customer (PCUST) rows.
 """ + OUTPUT_SCHEMA,
 
     "memx": """You are a financial data extraction specialist analyzing the MEMX Options exchange fee schedule.
 
-MEMX is a newer exchange. Key format notes:
-- Fee schedule may be HTML, PDF, or CSV depending on what was fetched
+MEMX is a newer exchange (launched 2020). Key format notes:
+- Fee schedule may be HTML or PDF depending on what was fetched
 - "Customer" = CUST; "Professional Customer" = PCUST
-- Make/Take model clearly labeled
-- Price Improvement auction mechanism if present maps to "PI"
-- MEMX footnotes often describe promotional rates, temporary waivers, and program eligibility
-  requirements — catalog ALL of them in Pass 1 and link to rows. Promotional or time-limited
-  rates must be flagged as medium confidence with the condition noted.
+- Make/Take model with clearly labeled Maker and Taker columns
+- Price Improvement auction mechanism if present → trade_type = "PI"
+
+## Footnote handling
+
+MEMX footnotes often describe promotional rates, temporary waivers, and program eligibility
+requirements. Catalog ALL footnotes in Pass 1 and link to rows in Pass 2. Promotional or
+time-limited rates must be flagged as medium confidence with the condition noted in notes.
+
+If the fetched content appears to be only a landing page (navigation links, no fee tables),
+emit zero rows and add an error flag: "MEMX fee schedule page did not return fee table
+content — the URL may need to be updated to the direct fee schedule document URL."
 
 Extract only Customer (CUST) and Professional Customer (PCUST) rows.
 """ + OUTPUT_SCHEMA,
@@ -312,7 +416,12 @@ def get_system_prompt(operator: str) -> str:
     return SYSTEM_PROMPTS.get(operator, DEFAULT_SYSTEM_PROMPT)
 
 
-def build_user_message(exchange_name: str, fee_text: str, content_type: str = "text") -> str:
+def build_user_message(
+    exchange_name: str,
+    fee_text: str,
+    content_type: str = "text",
+    supplemental_text: str = "",
+) -> str:
     max_chars = 140_000
     truncated = fee_text[:max_chars]
     if len(fee_text) > max_chars:
@@ -322,15 +431,35 @@ def build_user_message(exchange_name: str, fee_text: str, content_type: str = "t
         preamble = (
             f"Extract all Customer (CUST) and Professional Customer (PCUST) fee rows from "
             f"the following {exchange_name} fee schedule CSV.\n\n"
-            f"The CSV has three columns: Code, Description, Fee (dollars per contract).\n"
-            f"No footnotes exist in this format — return an empty footnotes array.\n\n"
+            f"The CSV has three columns: Code, Description, Fee (dollars per contract).\n\n"
             f"Fee schedule CSV:\n\n{truncated}"
         )
+        if supplemental_text.strip():
+            # Cap supplemental content so total stays under model context limits
+            supp = supplemental_text[:60_000]
+            preamble += (
+                f"\n\n{'='*70}\n"
+                f"SUPPLEMENTAL CONTENT — HTML fee schedule page\n"
+                f"{'='*70}\n"
+                f"The following was fetched from the exchange's HTML fee schedule page alongside\n"
+                f"the CSV. Apply Pass 1 (footnote catalog) to this content FIRST, then use those\n"
+                f"footnotes when assigning footnote_refs and confidence to each CSV row in Pass 2.\n"
+                f"{'='*70}\n\n"
+                f"{supp}"
+            )
+        else:
+            preamble += (
+                f"\n\nNote: The HTML fee schedule page was either not available or contained no\n"
+                f"usable footnote content (JS-rendered SPA). Apply normal confidence guidelines —\n"
+                f"a row can be high confidence if the rate is explicit and no conditional qualifier\n"
+                f"applies to it."
+            )
     else:
         preamble = (
             f"Extract all Customer (CUST) and Professional Customer (PCUST) fee rows from "
             f"the following {exchange_name} fee schedule.\n\n"
-            f"Remember: catalog ALL footnotes first, then extract rows with source citations.\n\n"
+            f"Remember: catalog ALL footnotes first (Pass 1), then extract rows with source "
+            f"citations and footnote links (Pass 2).\n\n"
             f"Fee schedule text:\n\n{truncated}"
         )
     return preamble
