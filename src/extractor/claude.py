@@ -17,7 +17,7 @@ from .prompts import get_system_prompt, build_user_message
 logger = logging.getLogger(__name__)
 
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-MAX_TOKENS = 8192
+MAX_TOKENS = 16384
 
 
 @dataclass
@@ -184,6 +184,11 @@ class ClaudeExtractor:
             rows, footnotes, flags = self._parse_response(
                 result.raw_response, exchange_id, extracted_at
             )
+            rows, dedup_flags = _dedup_rows(rows, exchange_id)
+            flags.extend(dedup_flags)
+            if content_type == "csv":
+                flags.extend(_validate_csv_rows(rows, exchange_id))
+            flags.extend(_validate_footnote_coverage(rows, footnotes, exchange_id))
             result.rows = rows
             result.footnotes = footnotes
             result.flags = flags
@@ -334,6 +339,81 @@ def _extract_json(text: str) -> str | None:
             if depth == 0:
                 return text[start : i + 1]
     return None
+
+
+def _dedup_rows(
+    rows: list[FeeRow], exchange_id: str
+) -> tuple[list[FeeRow], list[ExtractionFlag]]:
+    """Remove exact-duplicate rows (same key tuple). Returns deduped list + any flags."""
+    seen: dict[tuple, int] = {}
+    deduped: list[FeeRow] = []
+    flags: list[ExtractionFlag] = []
+    for row in rows:
+        key = (
+            row.ticker_class, row.sec_type, row.account_type,
+            row.trade_type, row.liq_code,
+        )
+        if key in seen:
+            seen[key] += 1
+        else:
+            seen[key] = 0
+            deduped.append(row)
+    removed = sum(v for v in seen.values())
+    if removed:
+        logger.warning(
+            "[%s] Removed %d duplicate row(s) from extraction output", exchange_id, removed
+        )
+        flags.append(ExtractionFlag(
+            severity="warning",
+            location="post-extraction dedup",
+            issue=f"{removed} duplicate row(s) removed — Claude returned the same key more than once.",
+        ))
+    return deduped, flags
+
+
+def _validate_footnote_coverage(
+    rows: list[FeeRow], footnotes: list[Footnote], exchange_id: str
+) -> list[ExtractionFlag]:
+    """If a document has footnotes but rows claim high confidence with empty footnote_refs,
+    that is a signal the AI may have ignored applicable footnotes.  Flag for human review."""
+    if not footnotes:
+        return []
+    suspicious = [r for r in rows if r.confidence == "high" and not r.footnote_refs]
+    if not suspicious:
+        return []
+    logger.warning(
+        "[%s] %d high-confidence row(s) have no footnote_refs but document has %d footnote(s)",
+        exchange_id, len(suspicious), len(footnotes),
+    )
+    return [ExtractionFlag(
+        severity="warning",
+        location="footnote coverage check",
+        issue=(
+            f"{len(suspicious)} row(s) are marked high confidence with empty footnote_refs, "
+            f"but this document contains {len(footnotes)} footnote(s). "
+            f"Verify these rows are genuinely unaffected by any footnote."
+        ),
+    )]
+
+
+def _validate_csv_rows(rows: list[FeeRow], exchange_id: str) -> list[ExtractionFlag]:
+    """For CSV-format extractions, flag any rows missing liq_code."""
+    flags: list[ExtractionFlag] = []
+    null_liq = [r for r in rows if not r.liq_code]
+    if null_liq:
+        logger.warning(
+            "[%s] %d row(s) have null liq_code in CSV extraction — possible consolidation error",
+            exchange_id, len(null_liq),
+        )
+        flags.append(ExtractionFlag(
+            severity="error",
+            location="liq_code validation",
+            issue=(
+                f"{len(null_liq)} row(s) have null liq_code. For CSV input every row must carry "
+                f"its Code value. Re-extraction may be required."
+            ),
+        ))
+    return flags
 
 
 def _to_rate(value: Any) -> float | None:

@@ -4,23 +4,23 @@ Automated pipeline that monitors, extracts, diffs, and alerts on fee schedule ch
 
 ## What it does
 
-1. **Fetches** each exchange's current fee schedule (PDF or HTML) from stable public URLs
-2. **Extracts** structured fee data using Claude AI — normalized to a consistent schema, with source citations and a full footnote catalog for every run
-3. **Diffs** the current extraction against the prior stored version
+1. **Fetches** each exchange's current fee schedule (CSV, PDF, or HTML) from stable public URLs
+2. **Extracts** structured fee data using Claude AI — normalized to a consistent schema, with a mandatory full footnote catalog for every run
+3. **Diffs** the current extraction against the prior stored version — keyed on `(exchange_id, ticker_class, sec_type, account_type, trade_type, liq_code)`
 4. **Alerts** via Microsoft Teams (and optionally email) when rates change, rows are added, or rows disappear
 5. **Flags** anything the AI is uncertain about for human review, with precise citations back to the source document
 6. **Analyzes** the full fee landscape cross-exchange to surface routing insights
 
 ## Supported Exchanges
 
-| Exchange | Operator | Format |
-|----------|----------|--------|
-| EDGX, BZX, C2, CBOE | CBOE | PDF |
-| MIAX, Pearl, Emerald, Sapphire | MIAX | PDF |
-| NOM, BX, PHLX, ISE, Gemini, Mercury | Nasdaq | HTML |
-| ARCA, AMEX | NYSE | PDF |
-| BOX | BOX | PDF |
-| MEMX | MEMX | HTML/PDF |
+| Exchange | Operator | Format | Status |
+|----------|----------|--------|--------|
+| EDGX, BZX, C2, CBOE | CBOE | CSV (via `?csv=true` endpoint) | Working |
+| MIAX, Pearl, Emerald, Sapphire | MIAX | PDF (miaxglobal.com) | URLs updated June 2026 |
+| NOM, BX, PHLX, ISE, Gemini, Mercury | Nasdaq | HTML (JS-rendered — see limitations) | Fetch works; content needs Playwright |
+| ARCA, AMEX | NYSE | PDF | AMEX working; ARCA URL updated |
+| BOX | BOX | PDF (boxexchange.com) | URL updated June 2026 |
+| MEMX | MEMX | HTML → CSV (dynamic link) | URL updated June 2026 |
 
 ## Setup
 
@@ -40,19 +40,18 @@ cp .env.example .env
 # TEAMS_WEBHOOK_URL and email settings are optional.
 ```
 
-### 3. Configure exchanges
+### 3. Validate endpoints before spending API tokens
 
-`config/exchanges.yaml` contains all 18 exchanges with their fee schedule URLs and operator family. Set `enabled: false` to skip any exchange. URLs are stable (CBOE and NYSE update in-place; Nasdaq pages are live HTML).
+```bash
+python main.py --preflight              # check all 18 exchanges
+python main.py --preflight --exchange edgx  # single exchange
+```
+
+Preflight checks HTTP reachability, content size, and whether the extracted text looks like a real fee schedule. It detects JS-rendered login walls (Nasdaq) and warns on suspiciously small responses. **Always run preflight before `--run-now`.**
 
 ## Usage
 
 ```bash
-# Test the full pipeline without an API key (synthetic data, real DB/diff/alert chain)
-python main.py --mock --exchange edgx
-
-# Simulate rate changes to test alert delivery
-python main.py --mock --mock-jitter --exchange edgx
-
 # Run the full pipeline for all exchanges (requires ANTHROPIC_API_KEY)
 python main.py --run-now
 
@@ -62,10 +61,16 @@ python main.py --run-now --exchange edgx
 # Run for multiple exchanges
 python main.py --run-now --exchange edgx bzx c2 cboe
 
+# Test the full pipeline without an API key (synthetic data, real DB/diff/alert chain)
+python main.py --mock --exchange edgx
+
+# Simulate rate changes to test alert delivery
+python main.py --mock --mock-jitter --exchange edgx
+
 # Start the weekly scheduler (blocking — run under systemd/screen/Task Scheduler)
 python main.py --schedule
 
-# Cross-exchange fee comparison table
+# Cross-exchange fee comparison table (with confidence and footnote indicators)
 python main.py --report
 
 # Filter report to one trade type
@@ -86,7 +91,7 @@ python main.py --run-now --debug
 
 ## Output schema
 
-Each extracted row represents a unique combination of:
+Each extracted row represents a unique fee entry from the source document:
 
 | Field | Values |
 |-------|--------|
@@ -95,30 +100,57 @@ Each extracted row represents a unique combination of:
 | `sec_type` | OPT (single-leg), MLEG (complex) |
 | `account_type` | CUST, PCUST |
 | `trade_type` | Electronic, PI, Solicitation |
-| `liq_code` | Exchange liquidity code where applicable |
+| `liq_code` | Exchange liquidity code — **required for CBOE CSV; always populated** |
 | `make_rate` | Per-contract dollar amount (positive = rebate) |
 | `take_rate` | Per-contract dollar amount (negative = fee) |
-| `auction_init_rate` | AIM/PIP/PRIME initiating side |
-| `auction_resp_rate` | AIM/PIP/PRIME responding side |
+| `auction_init_rate` | AIM/PIP/M-PIM initiating side (CUST) |
+| `auction_resp_rate` | AIM/PIP/M-PIM responding side |
 | `breakup_rate` | Fee when auction does not execute |
 | `source_page` | Page or section reference in the fee schedule |
 | `source_section` | Exact table/heading the rate was taken from |
-| `footnote_refs` | Footnote IDs that qualify this row, e.g. `["1","*"]` |
+| `footnote_refs` | Footnote IDs that apply to this row, e.g. `["1","*"]` |
 | `confidence` | high / medium / low |
-| `confidence_reason` | Explanation when confidence is below high |
-| `notes` | Other qualifications not captured in structured fields |
+| `confidence_reason` | Explanation when confidence is below high (required for medium/low) |
+| `notes` | Footnote-driven conditions, tier information, caveats |
 
-## Source citations and footnote handling
+### Rate model for PDF/HTML exchanges
 
-Every extraction run produces three outputs:
+For exchanges that present Maker and Taker in the same table row, a single output row carries both `make_rate` and `take_rate`. For PI auctions, `auction_init_rate` and `breakup_rate` are combined on one row per participant type. This avoids key collisions and keeps the diff engine clean.
 
-**Footnote catalog** — Claude reads the entire document before extracting any rates and catalogs every footnote verbatim, with its location in the document. Stored in the `footnotes` table and viewable with `--footnotes --exchange <id>`.
+### CBOE CSV
 
-**Row citations** — every fee row records exactly where in the document the number came from (`source_page`, `source_section`) and which footnotes apply to it (`footnote_refs`).
+CBOE is fetched via the `?csv=true` endpoint — one row per CBOE liquidity code (CA, NC, BC, etc.). `liq_code` is **always required** for CBOE rows. All CBOE rows are marked **medium confidence** because the CSV export strips footnotes from the underlying fee schedule.
 
-**Confidence flags** — rows where the AI is uncertain (tiered structures, conditional footnotes, ambiguous table layouts) are marked `medium` or `low` confidence with a plain-English explanation. These fire a separate Teams alert and appear in `--review` output.
+## Footnote handling
 
-The AI is explicitly instructed to use the **base table rate** and document footnote modifications separately — it never silently applies a footnote adjustment without recording it. A low-confidence row is always better than a silently wrong number.
+Every extraction run produces a two-pass result:
+
+**Pass 1 — Mandatory footnote catalog.**
+Claude reads the entire document and catalogs every footnote, endnote, asterisk note, dagger note, and qualifier it finds before touching any rate. Footnotes are stored in the `footnotes` table and viewable with `--footnotes --exchange <id>`.
+
+Note: CBOE exchanges are fetched via CSV export which **does not include footnotes**. The full footnotes are on the fee schedule landing pages at `cboe.com/us/options/membership/fee_schedule/<exchange>/`. This is why all CBOE rows carry medium confidence.
+
+**Pass 2 — Row extraction with footnote linkage.**
+For each fee row, Claude explicitly checks which footnotes from Pass 1 apply. Applicable footnotes are recorded in `footnote_refs`. An empty `footnote_refs` is only acceptable when Claude has verified no footnote affects that row.
+
+**Confidence rules — high is the exception.**
+
+| Level | When | What it means |
+|-------|------|---------------|
+| **high** | Rate clearly stated; source cited; applicable footnotes verified and recorded; footnotes don't substantially modify the rate | Fully sourced, all footnotes checked |
+| **medium** | A footnote applies (even informational); citation incomplete; mapping required interpretation; CBOE CSV always | Use with care; check `--review` |
+| **low** | Footnote substantially changes effective rate; conditional waiver; rate inferred; conflicting notes | Human review required before using |
+
+**Post-extraction validators** flag issues the prompt cannot always catch:
+- Duplicate rows (same key returned twice) → warning flag
+- Null `liq_code` on a CSV extraction → error flag
+- High-confidence rows with empty `footnote_refs` when the document has footnotes → warning flag
+
+## Report output
+
+`--report` shows two additional columns:
+- **Cf**: blank = high confidence, `?` = medium, `!` = low
+- **FnRefs**: footnote IDs that qualify the rate for that row
 
 ## Data storage
 
@@ -126,12 +158,44 @@ SQLite database at `data/db/fees.db` (configurable via `DB_PATH` env var). Schem
 
 Tables:
 - `fee_rows` — all extracted rows with citations, confidence, and footnote references
-- `footnotes` — every footnote extracted from each run
-- `extraction_flags` — AI-flagged issues (e.g. ambiguous tables, conflicting rates)
+- `footnotes` — every footnote extracted from each run (empty for CBOE CSV)
+- `extraction_flags` — AI-flagged issues + post-extraction validation flags
 - `run_history` — one record per extraction run with status and token counts
 - `raw_files` — metadata for downloaded fee schedule files
 
 Raw downloaded files are stored under `data/raw/<exchange_id>/` with UTC timestamps.
+
+## Testing
+
+```bash
+# Run full test suite (no API key required — all Anthropic calls are mocked)
+python -m pytest tests/
+
+# With coverage report
+python -m pytest tests/ --cov=src --cov-report=term-missing
+
+# Specific test file
+python -m pytest tests/test_extractor_footnotes.py -v
+```
+
+### Test suite overview
+
+| File | What it covers |
+|------|---------------|
+| `test_extractor_parsing.py` | All parsing functions (`_parse_rows`, `_parse_footnotes`, `_extract_json`, `_to_rate`), dedup, CSV validation, footnote coverage validator, `FeeRow` helpers |
+| `test_extractor_footnotes.py` | Integration tests using mocked Claude responses for four realistic footnote scenarios: CBOE CSV, MIAX volume-conditional rebates, NYSE cascading/multi-level footnotes, BOX conflicting footnotes and PFOF waivers |
+| `test_diff_engine.py` | All diff scenarios: no changes, added/removed/modified rows, null↔value transitions, floating-point stability, key normalisation, delta calculation |
+| `test_db.py` | Database round-trips: schema creation, migrations, `save_rows`/`get_latest_rows`, footnote and flag storage, run history, `get_review_needed` |
+| `test_prompts.py` | Prompt quality: all operators have prompts, CBOE hard requirements (liq_code, medium confidence, one-row-per-code), confidence rule tightness, footnote pass mandatory instruction, rate extraction rules |
+
+### Footnote test philosophy
+
+The footnote integration tests in `test_extractor_footnotes.py` are written at the complexity level of real fee schedules. Each scenario exercises a different class of footnote difficulty:
+
+- **CBOE CSV**: No footnotes in the CSV — tests verify every row has medium confidence, correct liq_code, no invented rates, no fabricated breakup fees
+- **MIAX volume-conditional**: Maker rebate applies only above 1M ADV threshold; taker fee subject to per-execution cap — tests verify base rate preserved, both footnotes referenced, confidence=medium
+- **NYSE cascading**: Seven distinct footnotes (asterisks, double-asterisks, daggers, lettered notes) with program qualifications and small-order caps — tests verify all seven catalogued, the correct ones linked to each row, firm-side fees excluded
+- **BOX conflicting**: Notes (i) and (ii) literally contradict each other for Non-Penny remove — tests verify conflict flag raised, both notes referenced, confidence=low, base table rate preserved rather than silently adjusted
 
 ## Alerts
 
@@ -152,20 +216,18 @@ Set `EMAIL_FROM`, `EMAIL_TO`, `EMAIL_SMTP_HOST`, etc. in `.env`. Works with Offi
 
 ## API cost estimate
 
-All costs are for the Anthropic Claude API (`claude-sonnet-4-20250514`). Pricing as of mid-2025: **$3.00 / 1M input tokens, $15.00 / 1M output tokens**.
+All costs are for `claude-sonnet-4-20250514`. Pricing as of mid-2025: **$3.00 / 1M input tokens, $15.00 / 1M output tokens**.
 
 | Scenario | Input tokens | Output tokens | Est. cost |
 |----------|-------------|---------------|-----------|
-| Single exchange (e.g. EDGX) | ~30k–60k | ~2k–4k | ~$0.12–$0.24 |
-| Full 18-exchange run | ~500k–900k | ~30k–60k | ~$2.00–$3.60 |
+| Single exchange (e.g. EDGX) | ~30k–60k | ~3k–6k | ~$0.14–$0.27 |
+| Full 18-exchange run | ~500k–900k | ~40k–80k | ~$2.10–$3.90 |
 | Cross-exchange insight pass | ~40k–60k | ~1k–2k | ~$0.14–$0.20 |
-| **Full weekly run (all-in)** | **~600k–1M** | **~35k–65k** | **~$2.25–$4.00** |
+| **Full weekly run (all-in)** | **~600k–1M** | **~45k–85k** | **~$2.35–$4.25** |
 
-**Annual cost at weekly cadence:** ~$115–$210/year.
+**Annual cost at weekly cadence:** ~$120–$220/year.
 
-Token usage varies by exchange — CBOE PDFs tend to be dense, Nasdaq HTML pages are longer but more structured. The `--history` command shows actual token counts per run once you start running.
-
-Token usage is logged per run in `run_history.input_tokens` and `run_history.output_tokens`.
+Max tokens per extraction call is set to 16,384 to handle large fee schedules (CBOE main: 115 CSV rows; AMEX PDF: 1,593 text lines).
 
 ## Scheduling
 
@@ -204,22 +266,28 @@ WantedBy=multi-user.target
 
 1. Add an entry to `config/exchanges.yaml` with `operator` set to one of: `cboe`, `nasdaq`, `nyse`, `miax`, `box`, `memx`
 2. If it's a new operator family, create `src/fetcher/<operator>.py` implementing `BaseFetcher.extract_text()` and add it to `src/fetcher/__init__.py`
-3. Add an operator-specific extraction prompt to `src/extractor/prompts.py`
-4. Run `python main.py --run-now --exchange <id> --debug` to validate, then check `--review` and `--footnotes` output
+3. Add an operator-specific extraction prompt to `src/extractor/prompts.py` — include footnote type descriptions specific to that exchange's format
+4. Run `python main.py --preflight --exchange <id>` to verify the URL works
+5. Run `python main.py --run-now --exchange <id> --debug` to validate extraction
+6. Check `--review` for low-confidence rows, `--footnotes --exchange <id>` for captured footnotes
 
 ## Validating extraction accuracy
 
-The recommended validation workflow for a new exchange:
+Recommended workflow for a new or re-validated exchange:
 
-1. Run `python main.py --run-now --exchange edgx`
-2. Run `python main.py --report --filter-trade-type Electronic` and compare against the hand-built spreadsheet
-3. Run `python main.py --footnotes --exchange edgx` to confirm footnotes were captured
-4. Run `python main.py --review` to check for any low-confidence rows and verify them against the source PDF
-5. If rates are wrong, check `data/raw/edgx/` for the downloaded PDF and compare against the extracted text
+1. `python main.py --preflight --exchange edgx` — confirm endpoint healthy
+2. `python main.py --run-now --exchange edgx` — run extraction
+3. `python main.py --report` — scan the `Cf` column for `?` and `!` markers; `FnRefs` shows which footnotes apply
+4. `python main.py --footnotes --exchange edgx` — confirm footnotes were captured (non-CSV exchanges)
+5. `python main.py --review` — inspect low/medium-confidence rows and their citations
+6. Compare against the hand-built spreadsheet or raw downloaded file in `data/raw/edgx/`
 
 ## Known limitations
 
-- Nasdaq fee pages may require JS rendering for some content — the HTML fetcher captures server-rendered HTML. A Playwright-based fetcher can be added if needed.
-- PHLX/ISE have complex tiered structures; the system defaults to Tier 1 and notes it.
-- First run produces no diff (nothing to compare against). The second run produces the first meaningful change report.
-- The `--mock` command generates synthetic data only — use it to test pipeline mechanics, not to check rates.
+- **Nasdaq (6 exchanges)**: The HTML pages at `listingcenter.nasdaq.com` are JS-rendered SPAs. The server-side HTML fetch returns navigation chrome, not fee tables. Preflight will flag these as a JS login wall. A Playwright-based fetcher is needed for actual content extraction.
+- **MIAX URL maintenance**: MIAX fee schedule PDFs have dated filenames (e.g. `MIAX_Options_Fee_Schedule_04012026.pdf`). Update `config/exchanges.yaml` when new PDFs are published. Check `miaxglobal.com/markets/us-options/all-options-exchanges/fees-archive` for the current link.
+- **BOX URL maintenance**: BOX fee schedule PDFs similarly include the effective date. Check `boxexchange.com` for updates.
+- **CBOE footnotes**: CBOE's CSV export does not include the footnotes from the underlying fee schedule. All CBOE rows are marked medium confidence as a result. To review CBOE footnotes, visit the fee schedule landing page directly.
+- **PHLX/ISE tiered structures**: The system defaults to Tier 1 rates and notes it in the `notes` field.
+- **First run produces no diff**: Nothing to compare against on the first run. The second run produces the first meaningful change report.
+- **`--mock` generates synthetic data only**: Use it to test pipeline mechanics, not to check rates.
