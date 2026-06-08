@@ -20,36 +20,49 @@ from .base import BaseFetcher, FetchResult, HEADERS, TIMEOUT
 logger = logging.getLogger(__name__)
 
 
+_BASE = "https://info.memxtrading.com"
+
+
 class MemxFetcher(BaseFetcher):
     def fetch(self) -> FetchResult:
         result = super().fetch()
         if not result.ok:
             return result
 
-        # Try to find a PDF link on the landing page and prefer that
+        # Prefer a linked CSV (most structured), then a PDF, then fall back to HTML text.
         try:
             soup = BeautifulSoup(result.raw_bytes, "lxml")
-            pdf_link = None
+            csv_link = pdf_link = None
             for a in soup.find_all("a", href=True):
                 href = a["href"]
-                if re.search(r"\.pdf", href, re.IGNORECASE):
-                    pdf_link = href if href.startswith("http") else "https://info.memxtrading.com" + href
-                    break
-            if pdf_link:
-                logger.info("[memx] Found PDF link: %s", pdf_link)
-                resp = requests.get(pdf_link, headers=HEADERS, timeout=TIMEOUT)
+                abs_href = href if href.startswith("http") else _BASE + href
+                if csv_link is None and re.search(r"\.csv", href, re.IGNORECASE):
+                    csv_link = abs_href
+                if pdf_link is None and re.search(r"\.pdf", href, re.IGNORECASE):
+                    pdf_link = abs_href
+
+            target_url = csv_link or pdf_link
+            if target_url:
+                content_type = "csv" if target_url == csv_link else "pdf"
+                logger.info("[memx] Found %s link: %s", content_type.upper(), target_url)
+                resp = requests.get(target_url, headers=HEADERS, timeout=TIMEOUT)
                 resp.raise_for_status()
                 result.raw_bytes = resp.content
-                result.content_type = "pdf"
-                result.file_path.with_suffix(".pdf").write_bytes(resp.content)
+                result.content_type = content_type
+                ext = "." + content_type
+                new_path = result.file_path.with_suffix(ext)
+                new_path.write_bytes(resp.content)
+                result.file_path = new_path
         except Exception as exc:
-            logger.warning("[memx] Could not fetch PDF, falling back to HTML: %s", exc)
+            logger.warning("[memx] Could not fetch CSV/PDF, falling back to HTML: %s", exc)
 
         return result
 
     def extract_text(self, result: FetchResult) -> str:
         if not result.ok:
             return ""
+        if result.content_type == "csv":
+            return result.raw_bytes.decode("utf-8", errors="replace")
         if result.content_type == "pdf":
             return _pdf_to_text(result.raw_bytes)
         return _html_to_text(result.raw_bytes)
