@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.cboe.com)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "PowerShell(cd \"c:\\\\Users\\\\CadelSaszik\\\\OneDrive - Watershed Technology, LLC\\\\Desktop\\\\FeeScheduleAutomation\"; $env:PYTHONIOENCODING=\"utf-8\"; python main.py --preflight --exchange edgx 2>&1 | Select-String -NotMatch \"^2026\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:v for k,v in d.items\\(\\) if 'mulch' in str\\(k\\).lower\\(\\) or 'mulch' in str\\(v\\).lower\\(\\)}, indent=2\\)\\)\")",
+      "Bash(npm list *)",
+      "Bash(npm --version)",
+      "Bash(npm i *)",
+      "Bash(graphify build *)",
+      "Bash(curl -fsSL https://bun.sh/install)",
+      "Bash(bash)",
+      "Bash(npm approve-scripts *)",
+      "Bash(bun --version)",
+      "Bash(npx bun *)",
+      "Bash(PATH=__TRACKED_VAR__:__TRACKED_VAR__/.bun/bin graphify build .)",
+      "Bash(npm search *)",
+      "Bash(npm info *)",
+      "WebFetch(domain:github.com)",
+      "Bash(PATH=__TRACKED_VAR__:__TRACKED_VAR__/.bun/bin bun install -g @os-eco/mulch-cli)",
+      "Bash(PATH=__TRACKED_VAR__:__TRACKED_VAR__/.bun/bin ml init)",
+      "PowerShell($mlExe = \"$env:USERPROFILE\\\\.bun\\\\bin\\\\ml.exe\"; Test-Path $mlExe; if \\(Test-Path $mlExe\\) { Set-Location \"c:\\\\Users\\\\CadelSaszik\\\\OneDrive - Watershed Technology, LLC\\\\Desktop\\\\FeeScheduleAutomation\"; & $mlExe init 2>&1 })",
+      "PowerShell($env:PATH = \"$env:APPDATA\\\\npm\\\\node_modules\\\\bun\\\\bin;$env:PATH\"; Set-Location \"c:\\\\Users\\\\CadelSaszik\\\\OneDrive - Watershed Technology, LLC\\\\Desktop\\\\FeeScheduleAutomation\"; ml init 2>&1)",
+      "PowerShell($env:PATH = \"$env:APPDATA\\\\npm\\\\node_modules\\\\bun\\\\bin;$env:PATH\"; Set-Location \"c:\\\\Users\\\\CadelSaszik\\\\OneDrive - Watershed Technology, LLC\\\\Desktop\\\\FeeScheduleAutomation\"; ml record --help 2>&1 | Select-Object -First 30)"
+    ]
+  }
+}
