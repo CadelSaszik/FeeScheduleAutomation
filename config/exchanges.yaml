@@ -36,7 +36,8 @@ exchanges:
     name: MIAX Options
     mic: XMIO
     operator: miax
-    fee_url: https://www.miaxoptions.com/sites/default/files/fee_schedule-files/MIAX_Options_Fee_Schedule.pdf
+    # Domain migrated from miaxoptions.com to miaxglobal.com; filename includes effective date
+    fee_url: https://www.miaxglobal.com/sites/default/files/fee_schedule-files/MIAX_Options_Fee_Schedule_04012026.pdf
     schedule_type: pdf
     enabled: true
 
@@ -44,7 +45,7 @@ exchanges:
     name: MIAX Pearl Options
     mic: MPRL
     operator: miax
-    fee_url: https://www.miaxoptions.com/sites/default/files/fee_schedule-files/MIAX_PEARL_Options_Fee_Schedule.pdf
+    fee_url: https://www.miaxglobal.com/sites/default/files/fee_schedule-files/MIAX_Pearl_Options_Fee_Schedule_02012026.pdf
     schedule_type: pdf
     enabled: true
 
@@ -52,7 +53,7 @@ exchanges:
     name: MIAX Emerald
     mic: EMLD
     operator: miax
-    fee_url: https://www.miaxoptions.com/sites/default/files/fee_schedule-files/MIAX_Emerald_Fee_Schedule.pdf
+    fee_url: https://www.miaxglobal.com/sites/default/files/fee_schedule-files/MIAX__Emerald__Fee__Schedule__04012026.pdf
     schedule_type: pdf
     enabled: true
 
@@ -60,7 +61,7 @@ exchanges:
     name: MIAX Sapphire
     mic: SPHR
     operator: miax
-    fee_url: https://www.miaxoptions.com/sites/default/files/fee_schedule-files/MIAX_Sapphire_Fee_Schedule.pdf
+    fee_url: https://www.miaxglobal.com/sites/default/files/fee_schedule-files/MIAX_Sapphire_Fee_Schedule_02012026.pdf
     schedule_type: pdf
     enabled: true
 
@@ -116,7 +117,8 @@ exchanges:
     name: NYSE ARCA Options
     mic: ARCO
     operator: nyse
-    fee_url: https://www.nyse.com/publicdocs/nyse/markets/arca-options/NYSE_ARCA_Options_Fee_Schedule.pdf
+    # Filename case changed: NYSE_Arca_Options (not NYSE_ARCA_Options)
+    fee_url: https://www.nyse.com/publicdocs/nyse/markets/arca-options/NYSE_Arca_Options_Fee_Schedule.pdf
     schedule_type: pdf
     enabled: true
 
@@ -132,7 +134,8 @@ exchanges:
     name: BOX Options Exchange
     mic: XBOX
     operator: box
-    fee_url: https://boxoptions.com/assets/BOX-Fee-Schedule.pdf
+    # Domain changed from boxoptions.com to boxexchange.com; filename includes date
+    fee_url: https://boxexchange.com/assets/BOX-Fee-Schedule-as-of-October-1-2025.pdf
     schedule_type: pdf
     enabled: true
 
@@ -140,7 +143,8 @@ exchanges:
     name: MEMX Options
     mic: MXOP
     operator: memx
-    fee_url: https://info.memxtrading.com/fee-schedules/
+    # Landing page; fetcher scrapes for linked CSV (or PDF) on the page
+    fee_url: https://info.memxtrading.com/us-options-trading-resources/us-options-fee-schedule/
     schedule_type: html
     enabled: true
 
