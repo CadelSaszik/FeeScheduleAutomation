@@ -378,6 +378,80 @@ class TestGetFootnotesExplicitRunId:
 
 
 # ===========================================================================
+# Footnote fallback — multi-exchange run where latest run has no footnotes
+# Reproduces the bug where running --exchange edgx amex together caused edgx
+# footnotes to disappear because the HTML fetch failed on that run.
+# ===========================================================================
+
+class TestFootnoteFallback:
+    def _setup_two_runs(self, tmp_db):
+        """Run 1: edgx with footnotes. Run 2: edgx without (HTML fetch failed)."""
+        fns = [make_footnote("1", "Volume rebate tier.", "HTML footnote 1")]
+        run1 = tmp_db.start_run("edgx", "cboe")
+        r1 = ExtractionResult(
+            exchange_id="edgx", operator="cboe", extracted_at=NOW,
+            rows=[make_row()], footnotes=fns,
+        )
+        tmp_db.finish_run(run1, r1)
+        tmp_db.save_rows(run1, [make_row()])
+        tmp_db.save_footnotes(run1, fns)
+
+        # Run 2 succeeds (rows saved) but has no footnotes (HTML fetch failed)
+        run2 = tmp_db.start_run("edgx", "cboe")
+        r2 = ExtractionResult(
+            exchange_id="edgx", operator="cboe", extracted_at=NOW,
+            rows=[make_row()], footnotes=[],
+        )
+        tmp_db.finish_run(run2, r2)
+        tmp_db.save_rows(run2, [make_row()])
+        return run1, run2
+
+    def test_get_footnotes_falls_back_to_run_with_footnotes(self, tmp_db):
+        run1, _ = self._setup_two_runs(tmp_db)
+        result = tmp_db.get_footnotes("edgx")
+        assert len(result) == 1
+        assert result[0]["ref"] == "1"
+        assert result[0]["run_id"] == run1
+
+    def test_get_all_latest_footnotes_falls_back(self, tmp_db):
+        run1, _ = self._setup_two_runs(tmp_db)
+        lookup = tmp_db.get_all_latest_footnotes()
+        assert ("edgx", "1") in lookup
+        assert lookup[("edgx", "1")] == "Volume rebate tier."
+
+    def test_multi_exchange_footnotes_isolated(self, tmp_db):
+        """edgx fallback must not bleed into bzx results."""
+        # edgx: run1 has footnotes, run2 does not
+        fns_edgx = [make_footnote("1", "edgx footnote", "HTML footnote 1")]
+        run1 = tmp_db.start_run("edgx", "cboe")
+        r1 = ExtractionResult(exchange_id="edgx", operator="cboe", extracted_at=NOW,
+                              rows=[make_row()], footnotes=fns_edgx)
+        tmp_db.finish_run(run1, r1)
+        tmp_db.save_rows(run1, [make_row()])
+        tmp_db.save_footnotes(run1, fns_edgx)
+
+        run2 = tmp_db.start_run("edgx", "cboe")
+        r2 = ExtractionResult(exchange_id="edgx", operator="cboe", extracted_at=NOW,
+                              rows=[make_row()], footnotes=[])
+        tmp_db.finish_run(run2, r2)
+        tmp_db.save_rows(run2, [make_row()])
+
+        # bzx: has its own footnotes from a separate run
+        fns_bzx = [make_footnote("2", "bzx footnote", "HTML footnote 2")]
+        run_bzx = tmp_db.start_run("bzx", "cboe")
+        r_bzx = ExtractionResult(exchange_id="bzx", operator="cboe", extracted_at=NOW,
+                                 rows=[make_row(exchange_id="bzx")], footnotes=fns_bzx)
+        tmp_db.finish_run(run_bzx, r_bzx)
+        tmp_db.save_rows(run_bzx, [make_row(exchange_id="bzx")])
+        tmp_db.save_footnotes(run_bzx, fns_bzx)
+
+        lookup = tmp_db.get_all_latest_footnotes()
+        assert ("edgx", "1") in lookup
+        assert ("bzx", "2") in lookup
+        assert ("edgx", "2") not in lookup   # bzx footnote must not appear under edgx
+
+
+# ===========================================================================
 # save_flags empty guard (lines 250-251)
 # ===========================================================================
 

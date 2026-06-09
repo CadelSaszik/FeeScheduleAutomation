@@ -307,28 +307,36 @@ class Database:
             return [dict(r) for r in rows]
 
     def get_all_latest_footnotes(self) -> dict[tuple[str, str], str]:
-        """Return {(exchange_id, ref): text} for the latest successful run of each exchange."""
+        """Return {(exchange_id, ref): text} for each exchange's most recent run that
+        actually contains footnotes.  Falls back gracefully when a newer run stored no
+        footnotes (e.g. the HTML supplemental fetch failed during that run)."""
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT fn.exchange_id, fn.ref, fn.text
                    FROM footnotes fn
                    JOIN (
-                       SELECT exchange_id, MAX(run_id) AS max_run
-                       FROM run_history WHERE status='ok'
-                       GROUP BY exchange_id
+                       SELECT fn2.exchange_id, MAX(fn2.run_id) AS max_run
+                       FROM footnotes fn2
+                       JOIN run_history rh ON fn2.run_id = rh.run_id
+                       WHERE rh.status = 'ok'
+                       GROUP BY fn2.exchange_id
                    ) latest ON fn.run_id = latest.max_run
                        AND fn.exchange_id = latest.exchange_id""",
             ).fetchall()
         return {(r["exchange_id"], r["ref"]): r["text"] for r in rows}
 
     def get_footnotes(self, exchange_id: str, run_id: Optional[int] = None) -> list[dict]:
-        """Return footnotes for the latest run (or a specific run_id)."""
+        """Return footnotes for a specific run_id, or the most recent run that has
+        footnotes for exchange_id.  Falls back to any run with footnotes rather than
+        returning empty when the latest run had no supplemental HTML."""
         with self._conn() as conn:
             if run_id is None:
                 run = conn.execute(
-                    """SELECT run_id FROM run_history
-                       WHERE exchange_id=? AND status='ok'
-                       ORDER BY finished_at DESC LIMIT 1""",
+                    """SELECT fn.run_id FROM footnotes fn
+                       JOIN run_history rh ON fn.run_id = rh.run_id
+                       WHERE fn.exchange_id=? AND rh.status='ok'
+                       GROUP BY fn.run_id
+                       ORDER BY fn.run_id DESC LIMIT 1""",
                     (exchange_id,),
                 ).fetchone()
                 if not run:

@@ -3,7 +3,7 @@
 Each test class is one vertical slice:
   Slice 1 — all rows have a ticker_class (Penny or Non-Penny)
   Slice 2 — PCUST MLEG rows (ZF/ZG/ZH/ZJ) are extracted
-  Slice 3 — AIM Contra (BB/BF) maps to auction_resp_rate, not breakup_rate
+  Slice 3 — AIM Contra (BB/BF) maps to breakup_rate (contra/initiating firm fee)
 
 Run the full quality suite:
     pytest tests/test_edgx_extraction_quality.py -v -m api
@@ -31,12 +31,6 @@ PCUST_MLEG_CODES = {
     "ZG": ("Penny",     "take_rate"),
     "ZH": ("Non-Penny", "make_rate"),
     "ZJ": ("Non-Penny", "take_rate"),
-}
-
-# AIM Contra codes — must be CUST/OPT/PI/auction_resp_rate, NOT breakup_rate
-AIM_CONTRA_CODES = {
-    "BB": "Penny",
-    "BF": "Non-Penny",
 }
 
 

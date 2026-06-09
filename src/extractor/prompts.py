@@ -126,9 +126,14 @@ For each rate, walk this tree top-to-bottom and stop at the first match:
 
 2. (Auction context — which role?)
    - Agency / Initiating / Agency Order → **auction_init_rate**; trade_type="PI" or "Solicitation"
+     - If a footnote also defines a breakup credit for this code (credit paid when the
+       auction doesn't complete), set `breakup_rate` to the credit amount (positive) on the
+       same row AND mark confidence=medium with the condition in `notes`.
    - Responder / Response / Improvement / Contra-side responder → **auction_resp_rate**
    - Contra / Breakup / Break-Up / Cancel / "Contra when no improvement" / Unexecuted
      → **breakup_rate**
+   - "Breakup Credit" / credit paid to agency when auction breaks up → **breakup_rate**
+     (positive value = credit), set on the agency row or as a separate row for that code
    - Cannot tell → confidence=low, use auction_init_rate, explain in notes
 
 3. Is this a MAKER / liquidity ADDER (Add, Adds, Maker, Posted, Resting)?
@@ -147,8 +152,11 @@ For each rate, walk this tree top-to-bottom and stop at the first match:
 - Free / $0.00 → 0.0 (not null)
 - Not applicable for this order type → null
 
-**One rate field per row**: all other rate fields must be null unless the source
-explicitly states them.
+**Primary rate per row with one exception**: set exactly one of make_rate, take_rate,
+auction_init_rate, or auction_resp_rate. The exception: `breakup_rate` MAY be set
+alongside any of those when the source explicitly defines both rates for the same code
+(e.g. auction_init_rate for the agency role + breakup_rate for when the auction breaks
+up). In that case set both and mark confidence=medium.
 
 - Extract only CUST and PCUST rows; skip Market Maker, Firm, BD, JBO.
 
@@ -275,12 +283,20 @@ The manifest has this structure for each footnote:
   TEXT: Full footnote text including any tiered conditions, volume thresholds, or waivers.
 
 **How to use the manifest (mandatory for Pass 1 and Pass 2):**
-- Pass 1: Read every FOOTNOTE entry. Populate the `footnotes` array with ref=N, text=TEXT,
-  location="HTML footnotes section, position N".
-- Pass 2: For each CSV row, look up its Code in every FOOTNOTE's APPLIES TO CODES list.
-  If the code appears there, add that footnote number to `footnote_refs`. If the footnote
-  text describes a volume tier, conditional waiver, cap, or program eligibility requirement,
-  the row must be marked at most medium/low confidence and the condition explained in `notes`.
+- Pass 1: Read every `[N]` entry. The ref is JUST the number (e.g. `[1]` → ref="1",
+  `[3]` → ref="3"). Populate the `footnotes` array with ref=N, text=TEXT,
+  location="HTML footnote N".
+- Pass 2: For each CSV row, look up its Code in every `[N]` APPLIES TO CODES list.
+  If the code appears there, add that number (e.g. "1", "3") to `footnote_refs`. If the
+  footnote text describes a volume tier, conditional waiver, cap, or program eligibility
+  requirement, the row must be marked at most medium/low confidence and the condition
+  explained in `notes`.
+- **Breakup credits in footnotes**: If a footnote describes a breakup credit — a positive
+  amount paid to the agency/initiating party when an AIM or SAM auction does not complete
+  — and that credit applies to a specific code, set `breakup_rate` to the credit amount
+  (positive = credit paid) on that code's row. You may set BOTH `auction_init_rate` and
+  `breakup_rate` on the same row when the source explicitly defines both rates for the same
+  code. Mark confidence=medium and explain the breakup condition in `notes`.
 
 If no footnote manifest is provided, apply normal confidence guidelines.
 

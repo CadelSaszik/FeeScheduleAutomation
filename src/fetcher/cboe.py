@@ -72,13 +72,30 @@ class CboeFetcher(BaseFetcher):
         We parse data-feecodes to build a clean manifest Claude can use directly
         to populate footnote_refs for each CSV row without guessing.
         """
-        try:
-            logger.info("[%s] Fetching HTML for footnotes: %s", self.exchange_id, html_url)
-            resp = self.session.get(html_url, timeout=TIMEOUT)
-            resp.raise_for_status()
-        except Exception as exc:
-            logger.warning("[%s] HTML fetch failed: %s", self.exchange_id, exc)
-            return ""
+        import time
+        resp = None
+        for attempt in range(2):
+            try:
+                logger.info(
+                    "[%s] Fetching HTML for footnotes (attempt %d): %s",
+                    self.exchange_id, attempt + 1, html_url,
+                )
+                resp = self.session.get(html_url, timeout=TIMEOUT)
+                resp.raise_for_status()
+                break
+            except Exception as exc:
+                if attempt == 0:
+                    logger.warning(
+                        "[%s] HTML fetch failed (attempt 1), retrying in 2s: %s",
+                        self.exchange_id, exc,
+                    )
+                    time.sleep(2)
+                else:
+                    logger.warning(
+                        "[%s] HTML fetch failed after retry — no footnotes will be available: %s",
+                        self.exchange_id, exc,
+                    )
+                    return ""
 
         soup = BeautifulSoup(resp.content, "lxml")
 
@@ -94,11 +111,14 @@ class CboeFetcher(BaseFetcher):
             )
             return ""
 
+        # Build manifest using [N] bracket format so Claude unambiguously uses just
+        # the number as the ref (matching _format_footnotes_for_injection in Pass 2).
+        # i tracks <ol> position (true footnote number); count tracks non-empty entries.
         lines: list[str] = [
             "=== CBOE FEE SCHEDULE FOOTNOTE MANIFEST ===",
-            "Each footnote below specifies which CSV fee codes it applies to.",
-            "For every CSV row whose Code appears in APPLIES TO CODES, add that",
-            "footnote number to footnote_refs and summarise the condition in notes.",
+            "For each entry below, the ref is the NUMBER in brackets, e.g. [1] → ref='1'.",
+            "For every CSV row whose Code appears in APPLIES TO CODES, add that ref to",
+            "footnote_refs and summarise the condition in notes.",
             "",
         ]
 
@@ -112,9 +132,9 @@ class CboeFetcher(BaseFetcher):
                 continue
             count += 1
             if codes:
-                lines.append(f"FOOTNOTE {i} — APPLIES TO CODES: {', '.join(codes)}")
+                lines.append(f"[{i}] APPLIES TO CODES: {', '.join(codes)}")
             else:
-                lines.append(f"FOOTNOTE {i} — APPLIES TO: (all codes — see text)")
+                lines.append(f"[{i}] APPLIES TO: (all codes — see text)")
             lines.append(f"TEXT: {text}")
             lines.append("")
 
