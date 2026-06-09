@@ -416,6 +416,43 @@ def get_system_prompt(operator: str) -> str:
     return SYSTEM_PROMPTS.get(operator, DEFAULT_SYSTEM_PROMPT)
 
 
+def build_fee_content_block(
+    exchange_name: str,
+    fee_text: str,
+    content_type: str = "text",
+    supplemental_text: str = "",
+) -> str:
+    """Return the formatted fee document text used as the cached content block.
+
+    This is sent identically in both Pass 1 and Pass 2, so the API can serve
+    Pass 2's document tokens from cache (~90% cost reduction on that block).
+    """
+    max_chars = 140_000
+    truncated = fee_text[:max_chars]
+    if len(fee_text) > max_chars:
+        truncated += "\n\n[... TRUNCATED — remaining content omitted ...]"
+
+    if content_type == "csv":
+        content = (
+            f"Fee schedule: {exchange_name}\n"
+            f"Format: 3-column CSV — Code, Description, Fee (dollars/contract)\n\n"
+            f"--- BEGIN FEE SCHEDULE CSV ---\n{truncated}\n--- END FEE SCHEDULE CSV ---"
+        )
+        if supplemental_text.strip():
+            supp = supplemental_text[:60_000]
+            content += (
+                f"\n\n{'='*70}\n"
+                f"SUPPLEMENTAL: HTML fee schedule page (footnote source)\n"
+                f"{'='*70}\n\n{supp}"
+            )
+    else:
+        content = (
+            f"Fee schedule: {exchange_name}\n\n"
+            f"--- BEGIN FEE SCHEDULE ---\n{truncated}\n--- END FEE SCHEDULE ---"
+        )
+    return content
+
+
 def build_user_message(
     exchange_name: str,
     fee_text: str,

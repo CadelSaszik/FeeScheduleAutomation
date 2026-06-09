@@ -24,7 +24,8 @@ from tests.conftest import (
     miax_response_volume_conditional,
     nyse_response_cascading_footnotes,
     box_response_conflicting_footnotes,
-    mock_anthropic_response,
+    mock_csv_response,
+    mock_two_pass_responses,
     response_high_conf_with_unacknowledged_footnotes,
     response_with_duplicate_rows,
     response_with_null_liq_codes,
@@ -32,11 +33,22 @@ from tests.conftest import (
 
 
 def _run(response_dict: dict, fee_text: str = "sample text",
-         content_type: str = "text", operator: str = "cboe") -> ExtractionResult:
-    """Patch the Anthropic client and run ClaudeExtractor.extract()."""
-    mock_resp = mock_anthropic_response(response_dict)
+         content_type: str = "text", operator: str = "cboe",
+         supplemental_text: str = "") -> ExtractionResult:
+    """Patch the Anthropic client and run ClaudeExtractor.extract().
+
+    For CSV without supplemental: only Pass 2 fires (one API call).
+    For everything else: Pass 1 (footnotes) then Pass 2 (rows) — two API calls.
+    The mock responses are split accordingly via side_effect.
+    """
+    skip_pass1 = content_type == "csv" and not supplemental_text.strip()
+    if skip_pass1:
+        responses = [mock_csv_response(response_dict)]
+    else:
+        responses = mock_two_pass_responses(response_dict)
+
     with patch("anthropic.Anthropic") as MockClient:
-        MockClient.return_value.messages.create.return_value = mock_resp
+        MockClient.return_value.messages.create.side_effect = responses
         extractor = ClaudeExtractor()
         return extractor.extract(
             exchange_id="edgx",
@@ -44,6 +56,7 @@ def _run(response_dict: dict, fee_text: str = "sample text",
             exchange_name="CBOE EDGX Options",
             fee_text=fee_text,
             content_type=content_type,
+            supplemental_text=supplemental_text,
         )
 
 
@@ -502,8 +515,8 @@ class TestNullLiqCodeInCsv:
 
 class TestEmptyFeeText:
     def test_empty_text_returns_error(self):
-        with patch("anthropic.Anthropic") as MockClient:
-            MockClient.return_value.messages.create.return_value = MagicMock()
+        # Empty text is caught before any API call — no mock response needed.
+        with patch("anthropic.Anthropic"):
             extractor = ClaudeExtractor()
             result = extractor.extract("edgx", "cboe", "EDGX", "", content_type="csv")
         assert not result.ok
@@ -511,8 +524,7 @@ class TestEmptyFeeText:
         assert "empty" in result.error.lower()
 
     def test_whitespace_only_returns_error(self):
-        with patch("anthropic.Anthropic") as MockClient:
-            MockClient.return_value.messages.create.return_value = MagicMock()
+        with patch("anthropic.Anthropic"):
             extractor = ClaudeExtractor()
             result = extractor.extract("edgx", "cboe", "EDGX", "   \n\t  ", content_type="csv")
         assert not result.ok

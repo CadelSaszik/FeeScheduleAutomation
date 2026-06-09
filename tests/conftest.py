@@ -81,17 +81,60 @@ def make_footnote(ref: str, text: str, location: str = "Page 1 bottom") -> Footn
 
 
 # ---------------------------------------------------------------------------
-# Mock Anthropic response builder
+# Mock Anthropic response builders
 # ---------------------------------------------------------------------------
 
 def mock_anthropic_response(response_json: dict) -> MagicMock:
-    """Build a mock anthropic.Message that ClaudeExtractor._parse_response can consume."""
+    """Legacy text-based mock (kept for tests that don't go through ClaudeExtractor)."""
     msg = MagicMock()
     msg.content = [MagicMock()]
     msg.content[0].text = "```json\n" + json.dumps(response_json) + "\n```"
     msg.usage.input_tokens = 5000
     msg.usage.output_tokens = 1500
     return msg
+
+
+def mock_tool_response(tool_name: str, input_dict: dict) -> MagicMock:
+    """Build a mock anthropic.Message containing a tool_use block.
+
+    This matches what the API returns when tool_choice forces a specific tool call.
+    ClaudeExtractor._pass1_footnotes and _pass2_rows both use _extract_tool_input()
+    which reads block.type == 'tool_use' and block.input.
+    """
+    block = MagicMock()
+    block.type = "tool_use"
+    block.name = tool_name
+    block.input = input_dict
+    msg = MagicMock()
+    msg.content = [block]
+    msg.usage.input_tokens = 5000
+    msg.usage.output_tokens = 1500
+    return msg
+
+
+def mock_two_pass_responses(response_json: dict) -> list[MagicMock]:
+    """Split a combined {footnotes, rows, flags} dict into the two tool-use responses
+    that ClaudeExtractor now makes: Pass 1 (record_footnotes) and Pass 2 (record_fee_rows).
+
+    Usage with side_effect:
+        MockClient.return_value.messages.create.side_effect = mock_two_pass_responses(response)
+    """
+    pass1 = mock_tool_response("record_footnotes", {"footnotes": response_json.get("footnotes", [])})
+    pass2 = mock_tool_response("record_fee_rows", {
+        "rows":  response_json.get("rows", []),
+        "flags": response_json.get("flags", []),
+    })
+    return [pass1, pass2]
+
+
+def mock_csv_response(response_json: dict) -> MagicMock:
+    """Single tool-use response for CBOE CSV extraction (Pass 1 is skipped for CSV
+    without supplemental, so only one API call is made — Pass 2 only).
+    """
+    return mock_tool_response("record_fee_rows", {
+        "rows":  response_json.get("rows", []),
+        "flags": response_json.get("flags", []),
+    })
 
 
 # ---------------------------------------------------------------------------

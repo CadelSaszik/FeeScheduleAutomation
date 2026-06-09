@@ -1,13 +1,11 @@
-"""Tests for error paths and previously uncovered helpers in claude.py.
+"""Tests for error paths and helpers in claude.py.
 
 Covers:
-  - Footnote.as_dict() and ExtractionFlag.as_dict()          (lines 30, 40)
-  - anthropic.APIError handler                               (lines 204-206)
-  - Unexpected exception handler                             (lines 207-209)
-  - No JSON found in Claude response                         (lines 225-226)
-  - JSONDecodeError in _parse_response                       (lines 230-232)
-  - Malformed row skipped in _parse_rows                     (lines 317-318)
-  - _extract_json returns None for unclosed brace            (line 341)
+  - Footnote.as_dict() and ExtractionFlag.as_dict()
+  - anthropic.APIError handler (fires on Pass 1 for text content)
+  - Unexpected exception handler
+  - Malformed row skipped in _parse_rows
+  - _extract_json returns None for unclosed brace (utility function, kept for debugging)
 """
 from __future__ import annotations
 
@@ -121,65 +119,6 @@ class TestClaudeExtractorApiErrors:
         extractor = self._make_extractor()
         extractor.client.messages.create.side_effect = ValueError("unexpected value error")
         result = extractor.extract("edgx", "cboe", "CBOE EDGX", "some fee data")
-        assert result.rows == []
-
-
-# ===========================================================================
-# No JSON in response (lines 225-226)
-# ===========================================================================
-
-class TestNoJsonInResponse:
-    def _run_with_text(self, response_text: str):
-        msg = MagicMock()
-        msg.content[0].text = response_text
-        msg.usage.input_tokens = 100
-        msg.usage.output_tokens = 50
-        with patch("anthropic.Anthropic") as MockClient:
-            MockClient.return_value.messages.create.return_value = msg
-            extractor = ClaudeExtractor()
-            return extractor.extract("edgx", "cboe", "CBOE EDGX", "some fee data")
-
-    def test_prose_only_returns_empty_rows(self):
-        result = self._run_with_text("I found some fees in the document.")
-        assert result.rows == []
-        assert result.footnotes == []
-
-    def test_prose_only_result_has_no_error(self):
-        # No API error — just an unhelpful response from Claude
-        result = self._run_with_text("No fees found.")
-        assert result.error is None
-
-    def test_partial_json_returns_empty(self):
-        result = self._run_with_text("Here is part of the data: {incomplete")
-        assert result.rows == []
-
-
-# ===========================================================================
-# JSONDecodeError (lines 230-232)
-# ===========================================================================
-
-class TestJsonDecodeError:
-    def _run_with_json_text(self, raw_text: str):
-        msg = MagicMock()
-        msg.content[0].text = raw_text
-        msg.usage.input_tokens = 100
-        msg.usage.output_tokens = 50
-        with patch("anthropic.Anthropic") as MockClient:
-            MockClient.return_value.messages.create.return_value = msg
-            extractor = ClaudeExtractor()
-            return extractor.extract("edgx", "cboe", "CBOE EDGX", "some fee data")
-
-    def test_invalid_json_returns_empty_rows(self):
-        # Looks like JSON but is invalid (missing closing quote)
-        result = self._run_with_json_text('{"rows": [{"ticker_class": "Penny]}}')
-        assert result.rows == []
-
-    def test_invalid_json_no_error_field(self):
-        result = self._run_with_json_text('{"rows": [broken json here}')
-        assert result.error is None  # not an API error, just a parse failure
-
-    def test_truncated_json_returns_empty(self):
-        result = self._run_with_json_text('{"rows": [{"ticker_class": "Penny", "sec_type":')
         assert result.rows == []
 
 

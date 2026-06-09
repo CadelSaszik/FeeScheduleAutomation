@@ -1,23 +1,117 @@
-"""AI extraction engine — uses Claude to parse fee schedule text into structured rows."""
+"""AI extraction engine — two-pass Claude extraction with tool use and prompt caching.
+
+Pass 1: Catalog every footnote (separate API call, result cached for Pass 2).
+Pass 2: Extract fee rows with the confirmed footnote list in context.
+
+Tool use enforces the output schema — no text-parsing regex required.
+Prompt caching (cache_control: ephemeral) on the system prompt and fee content block
+reduces Pass 2 input cost by ~90% on the document tokens.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import anthropic
 
-from .prompts import get_system_prompt, build_user_message
+from .prompts import build_fee_content_block, get_system_prompt
 
 logger = logging.getLogger(__name__)
 
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-MAX_TOKENS = 16384
+MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "16384"))
+# Footnote pass only needs enough for the footnotes JSON — cap it to keep costs down.
+FOOTNOTE_MAX_TOKENS = 4096
+
+# ---------------------------------------------------------------------------
+# Tool schemas — the API enforces these; no JSON regex parsing required.
+# ---------------------------------------------------------------------------
+
+FOOTNOTE_TOOL: dict = {
+    "name": "record_footnotes",
+    "description": (
+        "Record every footnote, endnote, asterisk note, dagger note, numbered note, "
+        "lettered note, and inline qualifier found in the fee schedule. "
+        "Call this after completing Pass 1. If no footnotes exist, pass an empty array."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "footnotes": {
+                "type": "array",
+                "description": "Every footnote found in the document",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "ref":      {"type": "string", "description": "Identifier exactly as it appears: '1', '*', '†', 'a', etc."},
+                        "text":     {"type": "string", "description": "Full verbatim text of the footnote"},
+                        "location": {"type": "string", "description": "Where it appears: 'Page 3 bottom', 'After Table 2', etc."},
+                    },
+                    "required": ["ref", "text", "location"],
+                },
+            }
+        },
+        "required": ["footnotes"],
+    },
+}
+
+FEE_ROWS_TOOL: dict = {
+    "name": "record_fee_rows",
+    "description": (
+        "Record extracted fee rows and any extraction flags. "
+        "Call this after completing Pass 2. Every CUST and PCUST row must be included."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "rows": {
+                "type": "array",
+                "description": "All extracted CUST and PCUST fee rows",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "ticker_class":      {"type": ["string", "null"]},
+                        "sec_type":          {"type": "string", "enum": ["OPT", "MLEG"]},
+                        "account_type":      {"type": "string", "enum": ["CUST", "PCUST"]},
+                        "trade_type":        {"type": "string", "enum": ["Electronic", "PI", "Solicitation"]},
+                        "liq_code":          {"type": ["string", "null"]},
+                        "make_rate":         {"type": ["number", "null"]},
+                        "take_rate":         {"type": ["number", "null"]},
+                        "auction_init_rate": {"type": ["number", "null"]},
+                        "auction_resp_rate": {"type": ["number", "null"]},
+                        "breakup_rate":      {"type": ["number", "null"]},
+                        "source_page":       {"type": ["string", "null"]},
+                        "source_section":    {"type": ["string", "null"]},
+                        "footnote_refs":     {"type": "array", "items": {"type": "string"}},
+                        "confidence":        {"type": "string", "enum": ["high", "medium", "low"]},
+                        "confidence_reason": {"type": ["string", "null"]},
+                        "notes":             {"type": ["string", "null"]},
+                    },
+                    "required": ["sec_type", "account_type", "trade_type", "footnote_refs", "confidence"],
+                },
+            },
+            "flags": {
+                "type": "array",
+                "description": "Issues that need human review",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": {"type": "string", "enum": ["warning", "error"]},
+                        "location": {"type": "string"},
+                        "issue":    {"type": "string"},
+                    },
+                    "required": ["severity", "location", "issue"],
+                },
+            },
+        },
+        "required": ["rows", "flags"],
+    },
+}
 
 
 @dataclass
@@ -54,11 +148,11 @@ class FeeRow:
     auction_init_rate: Optional[float]
     auction_resp_rate: Optional[float]
     breakup_rate: Optional[float]
-    source_page: Optional[str]       # "Page 4", "Section 3.2"
-    source_section: Optional[str]    # exact table/section heading
-    footnote_refs: list[str]         # footnote IDs that apply, e.g. ["1", "*"]
-    confidence: str                  # "high" | "medium" | "low"
-    confidence_reason: Optional[str] # required for medium/low
+    source_page: Optional[str]
+    source_section: Optional[str]
+    footnote_refs: list[str]
+    confidence: str
+    confidence_reason: Optional[str]
     notes: Optional[str]
 
     @property
@@ -66,7 +160,6 @@ class FeeRow:
         return self.confidence in ("medium", "low")
 
     def citation(self) -> str:
-        """Human-readable source citation for this row."""
         parts = []
         if self.source_page:
             parts.append(self.source_page)
@@ -121,7 +214,6 @@ class ExtractionResult:
         return [r for r in self.rows if r.needs_review]
 
     def review_summary(self) -> str:
-        """Short plain-text summary of anything needing human review."""
         lines = []
         if self.flags:
             lines.append(f"{len(self.flags)} flag(s) from extraction:")
@@ -164,31 +256,39 @@ class ClaudeExtractor:
             return result
 
         system_prompt = get_system_prompt(operator)
-        user_message = build_user_message(
-            exchange_name, fee_text,
-            content_type=content_type,
-            supplemental_text=supplemental_text,
+        fee_content = build_fee_content_block(
+            exchange_name, fee_text, content_type, supplemental_text
         )
 
         try:
-            logger.info("[%s] Sending to Claude (%s) for extraction…", exchange_id, MODEL)
-            response = self.client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
+            # Pass 1 — footnote catalog.
+            # Skipped for CBOE CSV without supplemental HTML: the CSV itself has no footnote text.
+            skip_pass1 = content_type == "csv" and not supplemental_text.strip()
+            if skip_pass1:
+                footnotes: list[Footnote] = []
+                p1_in = p1_out = 0
+                logger.info("[%s] Skipping footnote pass (CSV without supplemental)", exchange_id)
+            else:
+                footnotes, p1_in, p1_out = self._pass1_footnotes(
+                    system_prompt, fee_content, exchange_id
+                )
+
+            # Pass 2 — row extraction with confirmed footnotes in context.
+            rows, flags, p2_in, p2_out = self._pass2_rows(
+                system_prompt, fee_content, footnotes, exchange_id, extracted_at
             )
-            result.input_tokens = response.usage.input_tokens
-            result.output_tokens = response.usage.output_tokens
-            result.raw_response = response.content[0].text
+
+            result.input_tokens = p1_in + p2_in
+            result.output_tokens = p1_out + p2_out
+            result.raw_response = (
+                f"[pass1: {len(footnotes)} footnotes ({p1_in}+{p1_out} tok) | "
+                f"pass2: {len(rows)} rows ({p2_in}+{p2_out} tok)]"
+            )
             logger.info(
-                "[%s] Extraction complete — %d input / %d output tokens",
+                "[%s] Extraction complete — %d input / %d output tokens (both passes)",
                 exchange_id, result.input_tokens, result.output_tokens,
             )
 
-            rows, footnotes, flags = self._parse_response(
-                result.raw_response, exchange_id, extracted_at
-            )
             rows, dedup_flags = _dedup_rows(rows, exchange_id)
             flags.extend(dedup_flags)
             if content_type == "csv":
@@ -216,35 +316,109 @@ class ClaudeExtractor:
         return result
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Two-pass internals
     # ------------------------------------------------------------------
 
-    def _parse_response(
+    def _pass1_footnotes(
         self,
-        text: str,
+        system_prompt: str,
+        fee_content: str,
+        exchange_id: str,
+    ) -> tuple[list[Footnote], int, int]:
+        """Dedicated footnote catalog pass. Returns (footnotes, input_tokens, output_tokens)."""
+        logger.info("[%s] Pass 1 — footnote catalog (%s)…", exchange_id, MODEL)
+        response = self.client.messages.create(
+            model=MODEL,
+            max_tokens=FOOTNOTE_MAX_TOKENS,
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": fee_content,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "PASS 1 — FOOTNOTE CATALOG ONLY.\n\n"
+                            "Read the entire fee schedule above. Catalog every footnote, endnote, "
+                            "asterisk note, dagger note, numbered note, lettered note, superscript, "
+                            "and inline qualifier you find.\n\n"
+                            "Call record_footnotes with every footnote found. "
+                            "If the document truly contains no footnotes, call record_footnotes "
+                            "with an empty array."
+                        ),
+                    },
+                ],
+            }],
+            tools=[FOOTNOTE_TOOL],
+            tool_choice={"type": "tool", "name": "record_footnotes"},
+        )
+        tool_input = _extract_tool_input(response, "record_footnotes")
+        footnotes = _parse_footnotes(tool_input.get("footnotes", []))
+        logger.info("[%s] Pass 1 complete — %d footnote(s) found", exchange_id, len(footnotes))
+        return footnotes, response.usage.input_tokens, response.usage.output_tokens
+
+    def _pass2_rows(
+        self,
+        system_prompt: str,
+        fee_content: str,
+        footnotes: list[Footnote],
         exchange_id: str,
         extracted_at: datetime,
-    ) -> tuple[list[FeeRow], list[Footnote], list[ExtractionFlag]]:
-        json_str = _extract_json(text)
-        if not json_str:
-            logger.error("[%s] No JSON found in Claude response", exchange_id)
-            return [], [], []
+    ) -> tuple[list[FeeRow], list[ExtractionFlag], int, int]:
+        """Row extraction pass with the confirmed footnote list in context."""
+        logger.info("[%s] Pass 2 — row extraction (%s)…", exchange_id, MODEL)
 
-        try:
-            payload = json.loads(json_str)
-        except json.JSONDecodeError as exc:
-            logger.error("[%s] JSON parse error: %s", exchange_id, exc)
-            return [], [], []
+        if not footnotes:
+            fn_block = "  (none — no footnotes were found in this document)"
+        else:
+            lines = [f"  [{fn.ref}] {fn.text}  ({fn.location})" for fn in footnotes]
+            fn_block = "\n".join(lines)
 
-        footnotes = _parse_footnotes(payload.get("footnotes", []))
-        flags = _parse_flags(payload.get("flags", []))
-        rows = _parse_rows(payload.get("rows", []), exchange_id, extracted_at)
-
-        return rows, footnotes, flags
+        response = self.client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": fee_content,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "PASS 2 — FEE ROW EXTRACTION.\n\n"
+                            f"Pass 1 is complete. Confirmed footnotes from this document:\n\n"
+                            f"{fn_block}\n\n"
+                            "Now extract all CUST and PCUST fee rows. For every row:\n"
+                            "- Check each confirmed footnote above — does it apply to this row?\n"
+                            "- If yes, add its ref to footnote_refs and explain the condition in "
+                            "confidence_reason or notes.\n"
+                            "- An empty footnote_refs is only acceptable when you have confirmed "
+                            "no footnote from the list above affects this row.\n\n"
+                            "Call record_fee_rows with the rows and any flags."
+                        ),
+                    },
+                ],
+            }],
+            tools=[FEE_ROWS_TOOL],
+            tool_choice={"type": "tool", "name": "record_fee_rows"},
+        )
+        tool_input = _extract_tool_input(response, "record_fee_rows")
+        rows = _parse_rows(tool_input.get("rows", []), exchange_id, extracted_at)
+        flags = _parse_flags(tool_input.get("flags", []))
+        logger.info("[%s] Pass 2 complete — %d row(s), %d flag(s)", exchange_id, len(rows), len(flags))
+        return rows, flags, response.usage.input_tokens, response.usage.output_tokens
 
 
 # ---------------------------------------------------------------------------
-# Parsers
+# Parsers (exported — used by unit tests)
 # ---------------------------------------------------------------------------
 
 def _parse_footnotes(raw: list) -> list[Footnote]:
@@ -328,7 +502,17 @@ def _parse_rows(
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _extract_tool_input(response: Any, tool_name: str) -> dict:
+    """Extract the input dict from a tool_use response block."""
+    for block in (response.content or []):
+        if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == tool_name:
+            return block.input or {}
+    return {}
+
+
 def _extract_json(text: str) -> str | None:
+    """Extract a JSON object from text. Kept for debugging / external callers."""
+    import re
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fence:
         return fence.group(1)
@@ -349,7 +533,6 @@ def _extract_json(text: str) -> str | None:
 def _dedup_rows(
     rows: list[FeeRow], exchange_id: str
 ) -> tuple[list[FeeRow], list[ExtractionFlag]]:
-    """Remove exact-duplicate rows (same key tuple). Returns deduped list + any flags."""
     seen: dict[tuple, int] = {}
     deduped: list[FeeRow] = []
     flags: list[ExtractionFlag] = []
@@ -379,8 +562,6 @@ def _dedup_rows(
 def _validate_footnote_coverage(
     rows: list[FeeRow], footnotes: list[Footnote], exchange_id: str
 ) -> list[ExtractionFlag]:
-    """If a document has footnotes but rows claim high confidence with empty footnote_refs,
-    that is a signal the AI may have ignored applicable footnotes.  Flag for human review."""
     if not footnotes:
         return []
     suspicious = [r for r in rows if r.confidence == "high" and not r.footnote_refs]
@@ -402,7 +583,6 @@ def _validate_footnote_coverage(
 
 
 def _validate_csv_rows(rows: list[FeeRow], exchange_id: str) -> list[ExtractionFlag]:
-    """For CSV-format extractions, flag any rows missing liq_code."""
     flags: list[ExtractionFlag] = []
     null_liq = [r for r in rows if not r.liq_code]
     if null_liq:
