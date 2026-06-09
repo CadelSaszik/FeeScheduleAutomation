@@ -147,12 +147,13 @@ class TestSlice2PcustMlegRows:
 
 
 # ---------------------------------------------------------------------------
-# Slice 3 — AIM Contra (BB/BF) → auction_resp_rate, not breakup_rate
+# Slice 3 — AIM Contra (BB/BF) → breakup_rate
+# The contra/initiating firm fee when an AIM auction completes or breaks up.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.api
 class TestSlice3AimContraRateField:
-    """AIM Contra codes are contra-side customer fees, not breakup fees."""
+    """AIM Contra codes map to breakup_rate (contra/initiating firm fee), not auction_resp_rate."""
 
     @pytest.mark.parametrize("code,expected_class", [
         ("BB", "Penny"),
@@ -177,13 +178,13 @@ class TestSlice3AimContraRateField:
         )
 
     @pytest.mark.parametrize("code", ["BB", "BF"])
-    def test_aim_contra_uses_auction_resp_not_breakup(self, edgx_result, code):
+    def test_aim_contra_uses_breakup_rate(self, edgx_result, code):
         rows = [r for r in edgx_result.rows if r.liq_code == code]
         assert rows, f"Code {code} not found"
         r = rows[0]
-        assert r.auction_resp_rate is not None, (
-            f"{code}: auction_resp_rate should be set"
+        assert r.breakup_rate is not None, (
+            f"{code}: breakup_rate should be set (AIM Contra = contra/initiating firm fee)"
         )
-        assert r.breakup_rate is None, (
-            f"{code}: breakup_rate should be None (AIM Contra ≠ breakup fee)"
+        assert r.auction_resp_rate is None, (
+            f"{code}: auction_resp_rate should be None (AIM Contra is not a third-party responder)"
         )
