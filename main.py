@@ -373,6 +373,7 @@ def cmd_excel(path: str = "fee_schedule.xlsx") -> None:
     _trade = {"Electronic": 0, "PI": 1, "Solicitation": 2}
     _cls   = {"Penny": 0, "Non-Penny": 1}
     sort_key = lambda x: (
+        (x.get("exchange_id") or "").lower(),
         _sec.get(x.get("sec_type") or "", 9),
         _acct.get(x.get("account_type") or "", 9),
         _trade.get(x.get("trade_type") or "", 9),
