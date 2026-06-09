@@ -125,9 +125,11 @@ class TestCboePrompt:
             "CBOE prompt must mark liq_code as required and non-null"
         )
 
-    def test_one_row_per_csv_line(self):
-        assert "One row per CSV line" in self.prompt or "one row per CSV" in self.prompt.lower(), (
-            "CBOE prompt must instruct one row per CSV line"
+    def test_one_csv_line_emits_one_or_two_rows(self):
+        # No-class codes must expand to two rows (Penny + Non-Penny);
+        # codes with a class qualifier emit exactly one row.
+        assert "one or two" in self.prompt.lower() or "two rows" in self.prompt.lower(), (
+            "CBOE prompt must explain that no-class codes emit two rows (Penny + Non-Penny)"
         )
 
     def test_no_consolidation_of_codes(self):

@@ -23,7 +23,7 @@ from .prompts import build_fee_content_block, get_system_prompt
 
 logger = logging.getLogger(__name__)
 
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "16384"))
 # Footnote pass only needs enough for the footnotes JSON — cap it to keep costs down.
 FOOTNOTE_MAX_TOKENS = 4096

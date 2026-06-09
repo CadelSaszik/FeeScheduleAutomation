@@ -157,13 +157,28 @@ Map description keywords to schema fields as follows:
 
 **account_type:**
 - "Customer" (without "Professional" or "Non-Customer") → CUST
-- "Professional", "Non-Customer", "Pro Customer" → PCUST
-- Skip rows for "Market Maker", "Firm", "Broker Dealer", "BD", "JBO"
+- "Professional", "Non-Customer", "Non-Customer, Non-Professional", "Pro Customer" → PCUST
+- Skip rows for "Market Maker", "Firm", "Broker Dealer", "BD", "Away Market Maker", "JBO"
+- For Z-codes (complex orders): "Non-Customer" in the description = PCUST. Examples:
+    ZF = "Complex order, adds liquidity, Non-Customer, Penny" → PCUST/Penny/MLEG/make_rate
+    ZG = "Complex order, removes liquidity, Non-Customer, Penny" → PCUST/Penny/MLEG/take_rate
+    ZH = "Complex order, adds liquidity, Non-Customer, Non-Penny" → PCUST/Non-Penny/MLEG/make_rate
+    ZJ = "Complex order, removes liquidity, Non-Customer, Non-Penny" → PCUST/Non-Penny/MLEG/take_rate
 
-**ticker_class:**
+**ticker_class — REQUIRED on every row:**
 - "Penny" (without "Non-Penny") → Penny
 - "Non-Penny" → Non-Penny
-- If neither appears, check if the exchange has a single class and note it
+- **If the description has NO Penny or Non-Penny qualifier**, the fee applies to BOTH classes.
+  Emit TWO rows for that code: one with ticker_class="Penny" and one with ticker_class="Non-Penny".
+  Both rows get the same liq_code, the same rate, and the same source_page/source_section.
+  Example: CA = "Customer (contra Non-Customer), adds liquidity" → two rows:
+    {liq_code: "CA", ticker_class: "Penny",     make_rate: -0.01, ...}
+    {liq_code: "CA", ticker_class: "Non-Penny", make_rate: -0.01, ...}
+  Example: ZC = "Complex order, Customer (contra Customer)" → two rows:
+    {liq_code: "ZC", ticker_class: "Penny",     take_rate: 0.00, sec_type: "MLEG", ...}
+    {liq_code: "ZC", ticker_class: "Non-Penny", take_rate: 0.00, sec_type: "MLEG", ...}
+- **Never emit a row with ticker_class=null.** If you cannot determine the class, use the
+  two-row expansion above.
 
 **trade_type:**
 - Default / no qualifier → Electronic
@@ -172,12 +187,12 @@ Map description keywords to schema fields as follows:
 - "QCC" (Qualified Contingent Cross) → Solicitation
 
 **sec_type:**
-- "Complex", codes starting with Z (ZA, ZB, ZC…) → MLEG
+- "Complex", codes starting with Z (ZA, ZB, ZC, ZD, ZF, ZG, ZH, ZJ…) → MLEG
 - All others → OPT
 
 **make_rate vs take_rate:**
-- "Add", "Maker", "Post" → make_rate
-- "Remove", "Taker", "Take" → take_rate
+- "Add", "adds liquidity", "Maker" → make_rate
+- "Remove", "removes liquidity", "Taker" → take_rate
 - If the description implies a single Electronic rate with no Add/Remove qualifier, put it in take_rate
 
 **liq_code:** REQUIRED. Always set this to the EXACT Code column value for that row (e.g. "CA",
@@ -203,31 +218,35 @@ The manifest has this structure for each footnote:
 
 If no footnote manifest is provided, apply normal confidence guidelines.
 
-## Rate field assignment — use EXACTLY ONE field per row
+## Rate field assignment — use EXACTLY ONE field per output row
 
-For each CSV row you emit, only one rate field should be non-null (others stay null):
+For each output row you emit, only one rate field should be non-null (others stay null):
 - "Add", "adds liquidity", "Maker" → **make_rate** = Fee column value
 - "Remove", "removes liquidity", "Taker" → **take_rate** = Fee column value
 - AIM/PI Agency (customer initiating the auction) → **auction_init_rate** = Fee column value;
   set trade_type = "PI". Leave make_rate and take_rate null.
-- AIM/PI Response or AIM Contra → **auction_resp_rate** = Fee column value; trade_type = "PI"
+- **"AIM Contra"** (e.g. codes BB, BF) = the contra-side customer in an AIM cross (not a
+  breakup). Map to **auction_resp_rate**; trade_type = "PI". NOT breakup_rate.
+  Example: BB = "AIM Contra, Penny" → {liq_code:"BB", ticker_class:"Penny", trade_type:"PI",
+    account_type:"CUST", sec_type:"OPT", auction_resp_rate:0.05, breakup_rate:null}
+- AIM/PI Response → **auction_resp_rate** = Fee column value; trade_type = "PI"
 - SAM Agency (customer initiating) → **auction_init_rate** = Fee; trade_type = "Solicitation"
 - SAM Contra or Response → **auction_resp_rate** = Fee; trade_type = "Solicitation"
 - QCC Agency → **auction_init_rate** = Fee; trade_type = "Solicitation"
 - QCC Contra → **auction_resp_rate** = Fee; trade_type = "Solicitation"
-- "AIM Cancel", "Breakup" → **breakup_rate** = Fee; trade_type = "PI"
+- "AIM Cancel", "Breakup" (explicit cancel/breakup description only) → **breakup_rate** = Fee;
+  trade_type = "PI". Do NOT emit breakup_rate unless the description literally says "Cancel"
+  or "Breakup" — "AIM Contra" does NOT qualify.
 - No Add/Remove qualifier (plain trade) → **take_rate** = Fee column value
 - Routed orders → **take_rate** = Fee column value
 
 ## Important rules
-- **One row per CSV line**: for each CUST/PCUST CSV row, emit exactly ONE output row with the
-  liq_code set to that row's Code value. Never merge two codes into one row.
+- **One CSV line → one or two output rows**: if the CSV code has no class qualifier, emit two
+  rows (Penny + Non-Penny). Otherwise emit exactly one row. Never merge two codes into one row.
 - **Use only CSV values**: the rate field must come from the Fee column of that specific CSV
   row. Never substitute rates from memory or training data.
-- Extract only CUST and PCUST rows; skip Market Maker, Firm, BD, JBO rows entirely.
+- Extract only CUST and PCUST rows; skip Market Maker, Firm, BD, Away Market Maker, JBO rows entirely.
 - Do NOT conflate CBOE SUM/SAM with a Flash Auction — it is Solicitation.
-- AIM breakup fee (if present, often described as "AIM Cancel") → breakup_rate. Only emit
-  this if a code explicitly describes a cancel or breakup fee.
 - Fee values are already in dollars per contract — do not divide or convert.
 """ + OUTPUT_SCHEMA,
 
