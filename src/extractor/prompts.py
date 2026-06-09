@@ -157,7 +157,10 @@ Map description keywords to schema fields as follows:
 
 **account_type:**
 - "Customer" (without "Professional" or "Non-Customer") → CUST
-- "Professional", "Non-Customer", "Non-Customer, Non-Professional", "Pro Customer" → PCUST
+- "Professional", "Non-Customer" (alone), "Pro Customer" → PCUST
+- **"Non-Customer, Non-Professional"** → **SKIP** — this is a broker-dealer/firm bracket, NOT a customer
+  type. Do NOT emit a row for any code whose description contains "Non-Customer, Non-Professional".
+  Examples to skip: QM, QN, SA, SF, and any code with that exact phrase.
 - Skip rows for "Market Maker", "Firm", "Broker Dealer", "BD", "Away Market Maker", "JBO"
 - For Z-codes (complex orders): "Non-Customer" in the description = PCUST. Examples:
     ZF = "Complex order, adds liquidity, Non-Customer, Penny" → PCUST/Penny/MLEG/make_rate
@@ -182,9 +185,13 @@ Map description keywords to schema fields as follows:
 
 **trade_type:**
 - Default / no qualifier → Electronic
-- "AIM" (Automated Improvement Mechanism): Agency side → auction_init_rate; Contra/Response → auction_resp_rate
-- "SAM" (Solicited Order Mechanism) → Solicitation; Agency side → auction_init_rate; Contra → auction_resp_rate
-- "QCC" (Qualified Contingent Cross) → Solicitation
+- "AIM" (Automated Improvement Mechanism) → trade_type="PI":
+    Agency side → auction_init_rate; Contra → breakup_rate; Response → auction_resp_rate
+- "SAM" (Solicited Order Mechanism) → trade_type="Solicitation":
+    Agency side → auction_init_rate; **Contra → breakup_rate**; Response → auction_resp_rate
+    (SAM Contra = the guaranteed solicited contra — maps to breakup_rate, NOT auction_resp_rate)
+- "QCC" (Qualified Contingent Cross) → trade_type="Solicitation":
+    Agency → auction_init_rate; Contra → auction_resp_rate (QCC has no breakup concept)
 
 **sec_type:**
 - "Complex", codes starting with Z (ZA, ZB, ZC, ZD, ZF, ZG, ZH, ZJ…) → MLEG
@@ -225,18 +232,22 @@ For each output row you emit, only one rate field should be non-null (others sta
 - "Remove", "removes liquidity", "Taker" → **take_rate** = Fee column value
 - AIM/PI Agency (customer initiating the auction) → **auction_init_rate** = Fee column value;
   set trade_type = "PI". Leave make_rate and take_rate null.
-- **"AIM Contra"** (e.g. codes BB, BF) = the contra-side customer in an AIM cross (not a
-  breakup). Map to **auction_resp_rate**; trade_type = "PI". NOT breakup_rate.
+- **"AIM Contra"** (e.g. codes BB, BF on EDGX; YB, YC, YD on CBOE) = the fee charged to the
+  contra/initiating firm when the AIM auction completes or is broken. Map to **breakup_rate**;
+  trade_type = "PI".
   Example: BB = "AIM Contra, Penny" → {liq_code:"BB", ticker_class:"Penny", trade_type:"PI",
-    account_type:"CUST", sec_type:"OPT", auction_resp_rate:0.05, breakup_rate:null}
-- AIM/PI Response → **auction_resp_rate** = Fee column value; trade_type = "PI"
+    account_type:"CUST", sec_type:"OPT", breakup_rate:0.05, auction_resp_rate:null}
+- **"AIM Response"** (e.g. codes BD, BE on EDGX; NB, NC on CBOE) = fee charged to third-party
+  responders who improve on the contra's price. Map to **auction_resp_rate**; trade_type = "PI".
 - SAM Agency (customer initiating) → **auction_init_rate** = Fee; trade_type = "Solicitation"
-- SAM Contra or Response → **auction_resp_rate** = Fee; trade_type = "Solicitation"
+- SAM Contra (guaranteed solicited contra) → **breakup_rate** = Fee; trade_type = "Solicitation"
+  Example: SB = "SAM Contra (Customer)" → {breakup_rate:0.00, auction_resp_rate:null, ...}
+- SAM Response (third-party response improving on contra) → **auction_resp_rate** = Fee; trade_type = "Solicitation"
+  Example: SD = "SAM Response, Penny" → {auction_resp_rate:0.50, breakup_rate:null, ...}
 - QCC Agency → **auction_init_rate** = Fee; trade_type = "Solicitation"
 - QCC Contra → **auction_resp_rate** = Fee; trade_type = "Solicitation"
-- "AIM Cancel", "Breakup" (explicit cancel/breakup description only) → **breakup_rate** = Fee;
-  trade_type = "PI". Do NOT emit breakup_rate unless the description literally says "Cancel"
-  or "Breakup" — "AIM Contra" does NOT qualify.
+- Any description containing "Cancel", "Break", "Break-Up", or "Breakup" (not already covered
+  above) → **breakup_rate** = Fee; trade_type = "PI".
 - No Add/Remove qualifier (plain trade) → **take_rate** = Fee column value
 - Routed orders → **take_rate** = Fee column value
 
@@ -245,7 +256,8 @@ For each output row you emit, only one rate field should be non-null (others sta
   rows (Penny + Non-Penny). Otherwise emit exactly one row. Never merge two codes into one row.
 - **Use only CSV values**: the rate field must come from the Fee column of that specific CSV
   row. Never substitute rates from memory or training data.
-- Extract only CUST and PCUST rows; skip Market Maker, Firm, BD, Away Market Maker, JBO rows entirely.
+- Extract only CUST and PCUST rows; skip Market Maker, Firm, BD, Away Market Maker, JBO, and
+  "Non-Customer, Non-Professional" rows entirely.
 - Do NOT conflate CBOE SUM/SAM with a Flash Auction — it is Solicitation.
 - Fee values are already in dollars per contract — do not divide or convert.
 """ + OUTPUT_SCHEMA,
@@ -306,6 +318,9 @@ PDFs extracted by pdfplumber, delivered page-by-page with markers:
 - Only map rows explicitly labeled "Professional Customer" to PCUST; do not infer from "Non-Customer Firm"
 - Price Improvement auction on NYSE ARCA = "Customer Best Execution Auction" (CUBE) → "PI"
 - NYSE American Customer Best Execution mechanism → "PI" or "Solicitation" per context
+- **Breakup fees**: any row for a "CUBE Breakup", "Improvement Breakup", contra/initiator fee
+  when an auction does not complete → **breakup_rate**. Agency → auction_init_rate;
+  responder → auction_resp_rate. Do NOT put contra/breakup fees in auction_resp_rate.
 
 ## Footnote handling (mandatory — NYSE uses footnotes extensively)
 
@@ -345,6 +360,9 @@ PDFs extracted by pdfplumber, delivered page-by-page with markers:
 - M-PIM (MIAX Price Improvement Mechanism) → trade_type = "PI"
 - Solicited Order Mechanism → trade_type = "Solicitation"
 - Rebates are presented as negative values in some MIAX tables — adjust sign so rebates are POSITIVE
+- **Breakup fees**: M-PIM or Solicited Order contra/initiator fees when an auction does not
+  complete → **breakup_rate**. Agency → auction_init_rate; responder → auction_resp_rate.
+  Do NOT put contra/breakup fees in auction_resp_rate.
 
 ## Footnote handling (mandatory — MIAX footnotes control nearly every CUST rate)
 
@@ -386,6 +404,10 @@ Single PDF extracted by pdfplumber, delivered page-by-page:
 - "Public Customer" = CUST; "Professional Customer" or "Public Customer >99 contracts/day" = PCUST
 - PIP (Price Improvement Period) and BIM (BOX Improvement Mechanism) → trade_type = "PI"
 - BOX uses "Maker" and "Taker" labels → make_rate and take_rate respectively
+- **Breakup fees**: any code/row describing a "Breakup", "Break-Up", "Improvement Order Break",
+  or similar (the contra/initiator fee when a PIP/BIM does not complete) → **breakup_rate**.
+  The agency/initiator fee → auction_init_rate; responder fee → auction_resp_rate.
+  Do NOT put contra/breakup fees in auction_resp_rate.
 
 ## Footnote handling (mandatory — BOX footnotes qualify most rates)
 

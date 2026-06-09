@@ -13,6 +13,8 @@ Usage:
     python main.py --exchange edgx bzx           # Multiple specific exchanges
     python main.py --schedule                    # Start weekly scheduler (blocking)
     python main.py --report                      # Print cross-exchange fee comparison
+    python main.py --report --excel              # Also export to fee_report.xlsx (one sheet/exchange)
+    python main.py --report --excel my_fees.xlsx # Export to a named file
     python main.py --review                      # Show rows/flags needing human review
     python main.py --footnotes --exchange edgx   # Show footnotes extracted from a schedule
     python main.py --history                     # Print recent run history
@@ -264,7 +266,7 @@ def cmd_schedule() -> None:
         time.sleep(60)
 
 
-def cmd_report(trade_type_filter: str | None = None) -> None:
+def cmd_report(trade_type_filter: str | None = None, excel_path: str | None = None) -> None:
     import json as _json
     from src.persistence.db import Database
     from tabulate import tabulate
@@ -278,46 +280,111 @@ def cmd_report(trade_type_filter: str | None = None) -> None:
 
     sort_key = lambda x: (
         x.get("exchange_id") or "",
-        x.get("account_type") or "",
-        x.get("ticker_class") or "",
-        x.get("sec_type") or "",
-        x.get("trade_type") or "",
         x.get("liq_code") or "",
+        x.get("sec_type") or "",
+        x.get("account_type") or "",
+        x.get("trade_type") or "",
+        x.get("ticker_class") or "",
     )
 
-    table_rows = []
+    RATE_FIELDS = ["make_rate", "take_rate", "auction_init_rate", "auction_resp_rate", "breakup_rate"]
+    headers = ["Exchange", "LiqCode", "SecType", "AcctType", "TradeType", "Class",
+               "Make", "Take", "AuctInit", "AuctResp", "Breakup", "Cf", "FnRefs"]
+
+    display_rows = []   # formatted strings for terminal
+    raw_rows = []       # raw values for Excel (rates as float or None)
+
     for r in sorted(rows, key=sort_key):
         if trade_type_filter and r.get("trade_type") != trade_type_filter:
             continue
         fn_refs = _json.loads(r.get("footnote_refs") or "[]")
         conf = r.get("confidence", "high")
-        # Confidence indicator: blank=high, ?=medium, !=low
         conf_mark = "" if conf == "high" else ("?" if conf == "medium" else "!")
         fn_mark = ",".join(fn_refs) if fn_refs else ""
-        table_rows.append([
-            (r.get("exchange_id") or "").upper(),
-            r.get("account_type") or "",
-            r.get("ticker_class") or "",
-            r.get("sec_type") or "",
-            r.get("trade_type") or "",
-            r.get("liq_code") or "",
-            _fmt(r.get("make_rate")),
-            _fmt(r.get("take_rate")),
-            _fmt(r.get("auction_init_rate")),
-            _fmt(r.get("auction_resp_rate")),
-            _fmt(r.get("breakup_rate")),
-            conf_mark,
-            fn_mark,
-        ])
 
-    headers = ["Exchange", "AcctType", "Class", "SecType", "TradeType", "LiqCode",
-               "Make", "Take", "AuctInit", "AuctResp", "Breakup", "Cf", "FnRefs"]
-    print(tabulate(table_rows, headers=headers, tablefmt="outline"))
+        meta = [
+            (r.get("exchange_id") or "").upper(),
+            r.get("liq_code") or "",
+            r.get("sec_type") or "",
+            r.get("account_type") or "",
+            r.get("trade_type") or "",
+            r.get("ticker_class") or "",
+        ]
+        rates_fmt = [_fmt(r.get(f)) for f in RATE_FIELDS]
+        rates_raw = [float(r[f]) if r.get(f) is not None else None for f in RATE_FIELDS]
+        suffix = [conf_mark, fn_mark]
+
+        display_rows.append(meta + rates_fmt + suffix)
+        raw_rows.append(meta + rates_raw + suffix)
+
+    print(tabulate(display_rows, headers=headers, tablefmt="outline"))
     exchange_count = len(set(r["exchange_id"] for r in rows))
-    shown = len(table_rows)
+    shown = len(display_rows)
     filter_note = f" ({trade_type_filter} only)" if trade_type_filter else ""
     print(f"\n{shown} rows shown{filter_note} | {len(rows)} total rows across {exchange_count} exchange(s)")
     print("Cf: blank=high confidence, ?=medium, !=low  |  FnRefs: applicable footnote IDs")
+
+    if excel_path:
+        _write_excel_report(headers, raw_rows, excel_path)
+        print(f"\nExcel workbook written to: {excel_path}")
+
+
+def _write_excel_report(headers: list, raw_rows: list, path: str) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    from collections import defaultdict
+
+    HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
+    HEADER_FONT = Font(bold=True, color="FFFFFF", size=10)
+    ALT_FILL    = PatternFill("solid", fgColor="D6E4F0")
+    RATE_COLS   = {"Make", "Take", "AuctInit", "AuctResp", "Breakup"}
+    RATE_FMT    = '#,##0.00;[Red]-#,##0.00'
+
+    wb = Workbook()
+    wb.remove(wb.active)  # remove default empty sheet
+
+    # Group rows by exchange (column index 0)
+    by_exchange: dict[str, list] = defaultdict(list)
+    for row in raw_rows:
+        by_exchange[row[0]].append(row)
+
+    def _make_sheet(ws, sheet_rows):
+        ws.freeze_panes = "A2"
+        # Header
+        for col_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=h)
+            cell.font = HEADER_FONT
+            cell.fill = HEADER_FILL
+            cell.alignment = Alignment(horizontal="center")
+        # Data
+        for row_idx, row in enumerate(sheet_rows, 2):
+            fill = ALT_FILL if row_idx % 2 == 0 else None
+            for col_idx, val in enumerate(row, 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                if fill:
+                    cell.fill = fill
+                if headers[col_idx - 1] in RATE_COLS and val is not None:
+                    cell.number_format = RATE_FMT
+        # Auto-width (cap at 40)
+        for col_idx, h in enumerate(headers, 1):
+            col_letter = get_column_letter(col_idx)
+            max_len = max(
+                (len(str(sheet_rows[i][col_idx - 1] or "")) for i in range(len(sheet_rows))),
+                default=0,
+            )
+            ws.column_dimensions[col_letter].width = min(max(max_len, len(h)) + 2, 40)
+
+    # One sheet per exchange
+    for xid in sorted(by_exchange):
+        ws = wb.create_sheet(title=xid)
+        _make_sheet(ws, by_exchange[xid])
+
+    # Summary sheet (all exchanges) at the front
+    ws_all = wb.create_sheet(title="All", index=0)
+    _make_sheet(ws_all, raw_rows)
+
+    wb.save(path)
 
 
 def cmd_review() -> None:
@@ -511,6 +578,13 @@ def main() -> None:
         help="Filter --report to one trade type: Electronic, PI, or Solicitation",
     )
     parser.add_argument(
+        "--excel",
+        nargs="?",
+        const="fee_report.xlsx",
+        metavar="FILE",
+        help="Write --report output to an Excel workbook with one sheet per exchange (default: fee_report.xlsx)",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging",
@@ -535,7 +609,10 @@ def main() -> None:
             parser.error("--exchange cannot be used with --schedule")
         cmd_schedule()
     elif args.report:
-        cmd_report(trade_type_filter=getattr(args, "filter_trade_type", None))
+        cmd_report(
+            trade_type_filter=getattr(args, "filter_trade_type", None),
+            excel_path=getattr(args, "excel", None),
+        )
     elif args.history:
         cmd_history()
     elif args.review:
