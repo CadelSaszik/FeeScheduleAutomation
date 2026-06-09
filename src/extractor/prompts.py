@@ -33,6 +33,26 @@ If a footnote changes the effective rate, use the BASE table rate (not the adjus
 record the footnote in `footnote_refs`, and explain the modification in `notes`. This
 preserves the headline rate for diffing while documenting the true effective condition.
 
+## Conflict resolution — read before extracting any rows
+
+If two source rows could map to the same output key
+(ticker_class, sec_type, account_type, trade_type, liq_code), you MUST emit
+exactly ONE row. Resolve conflicts in this order:
+
+1. **VOLUME TIERS**: If one rate is conditional on ADV/volume thresholds and
+   the other is the base rate, emit the BASE (unconditional) rate. Capture tier
+   details in `notes`. Do NOT emit one row per tier.
+2. **REBATE VS FEE AMBIGUITY**: If the same code appears in both a "Fees" table
+   and a "Rebates" table, use sign convention (negative = fee, positive = rebate)
+   and emit a single row with the correct sign.
+3. **EFFECTIVE DATE CONFLICTS**: If two rows differ only by effective date, emit
+   the most recent row only.
+4. **CANNOT RESOLVE**: Emit ONE row with confidence=low and a confidence_reason
+   explaining both candidate values. Do NOT emit both rows.
+
+**HARD RULE**: The tool call must never contain two rows with the same
+(ticker_class, sec_type, account_type, trade_type, liq_code) key.
+
 ## Output format
 
 Return a single JSON object with three keys: "footnotes", "rows", and "flags".
@@ -95,42 +115,81 @@ Each flag:
   liq_code must appear as its own separate row. NEVER consolidate multiple codes into one row.
 - Use ONLY values that appear explicitly in the source document. Do NOT infer or use prior
   knowledge to fill in rates that are not stated for that specific code/row.
-- Each row should populate EXACTLY ONE primary rate field based on the liquidity direction.
-  Leave all other rate fields null unless the source explicitly states them.
+## Rate field assignment — decision tree
+
+For each rate, walk this tree top-to-bottom and stop at the first match:
+
+1. Does the description mention "AIM", "PIP", "M-PIM", "SAM", "PRISM", "PIXL",
+   "FleX", "QCC", or any named auction mechanism?
+   - YES → go to step 2
+   - NO  → go to step 3
+
+2. (Auction context — which role?)
+   - Agency / Initiating / Agency Order → **auction_init_rate**; trade_type="PI" or "Solicitation"
+   - Responder / Response / Improvement / Contra-side responder → **auction_resp_rate**
+   - Contra / Breakup / Break-Up / Cancel / "Contra when no improvement" / Unexecuted
+     → **breakup_rate**
+   - Cannot tell → confidence=low, use auction_init_rate, explain in notes
+
+3. Is this a MAKER / liquidity ADDER (Add, Adds, Maker, Posted, Resting)?
+   - YES → **make_rate**
+
+4. Is this a TAKER / liquidity REMOVER (Remove, Removes, Taker, Routed, Executed,
+   plain Electronic with no liquidity qualifier, Marketable)?
+   - YES → **take_rate**
+
+5. No qualifier found → **take_rate** (default), confidence=medium,
+   note "liquidity role not specified in source"
+
+**Sign convention** (apply to every field):
+- Fee charged to participant → NEGATIVE (e.g. -0.85)
+- Rebate paid to participant → POSITIVE (e.g. +0.48)
+- Free / $0.00 → 0.0 (not null)
+- Not applicable for this order type → null
+
+**One rate field per row**: all other rate fields must be null unless the source
+explicitly states them.
+
 - Extract only CUST and PCUST rows; skip Market Maker, Firm, BD, JBO.
 
-## Confidence guidelines
+## Confidence rules — calibration table
 
 **high** requires ALL of the following to be true:
 1. The rate value is explicitly and unambiguously stated in a specific table cell.
 2. `source_page` and `source_section` are populated with a precise location reference.
-3. You have checked whether any footnote in the document applies to this row. If ANY
-   footnote applies, it MUST be listed in `footnote_refs`. A row with footnote_refs=[]
-   can only be high confidence if you have confirmed that no footnote in the document
-   modifies, qualifies, conditions, or caps this specific rate.
-4. The footnotes listed in `footnote_refs` do NOT substantially change the effective rate
-   (e.g. they are informational only, or describe a program the customer may not qualify for).
+3. You have confirmed whether any footnote in the document applies to this row. If ANY
+   footnote applies, it MUST be listed in `footnote_refs`.
+4. The footnotes in `footnote_refs` do NOT substantially change the effective rate
+   (informational only, or describe a program the customer may not qualify for).
 
-**medium**: Use whenever ANY of the following is true:
-- A footnote applies to this row (even an informational one) — record it in footnote_refs
-  and explain in confidence_reason what the footnote says.
-- The source citation is incomplete (missing page or section).
-- The rate required interpretation or mapping judgment.
-- You are uncertain whether a footnote applies to this row.
-- The document has footnotes but you could not determine which ones apply here.
+Use this calibration table to decide. The **FIRST matching row** wins.
 
-**low**: Use when:
-- A footnote substantially changes the effective rate (e.g. "rate is waived if...",
-  "subject to a minimum of $X", conditional on volume tier or program membership).
-- The rate is inferred rather than explicitly stated.
-- The source table layout was ambiguous or badly formatted.
-- A low-confidence row MUST have a confidence_reason explaining what is uncertain.
+| Condition | Confidence |
+|-----------|------------|
+| Rate is a literal number in the source, source cited, footnote check complete | high |
+| Rate has footnote refs AND those footnotes are catalogued and informational only | high |
+| Rate is conditional on ADV/volume but the base rate is clearly stated | high |
+| Rate description is ambiguous between two fields | medium |
+| Rate exists but effective date is future (not yet live) | medium |
+| Footnote reference exists but footnote text is missing | medium |
+| Rate required interpretation or mapping judgment | medium |
+| Source citation is incomplete (missing page or section) | medium |
+| Document has footnotes but you cannot determine which apply here | medium |
+| Rate is inferred from context (not explicitly stated) | low |
+| Two candidate values exist and cannot be reconciled | low |
+| Source text is cut off, corrupted, or partially visible | low |
+| Footnote substantially changes the effective rate (waiver, cap, volume condition) | low |
 
-**Default to medium when unsure.** It is far better to mark a row medium/low than to
-silently emit an incorrect or unqualified number as high confidence.
+**IMPORTANT — volume tiers do NOT lower confidence.** If the source shows a tiered
+schedule and the base/standard rate is clearly stated, that row is high confidence.
+Capture tier detail in `notes`. Only flag low/medium when the rate VALUE itself is
+uncertain, not when conditions on that rate are complex.
 
-In practice: almost every fee schedule row will have at least one applicable footnote.
-A high-confidence row is the exception, not the rule.
+A high-confidence row is the exception, not the rule — almost every fee schedule row
+has at least one applicable footnote. A low-confidence row MUST have a
+confidence_reason explaining what is uncertain.
+Default to medium when unsure — a wrong high-confidence row is worse than a correct
+medium-confidence one.
 """
 
 # ---------------------------------------------------------------------------

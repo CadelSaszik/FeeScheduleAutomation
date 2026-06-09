@@ -145,6 +145,9 @@ class Database:
                 ("confidence",        "TEXT NOT NULL DEFAULT 'high'"),
                 ("confidence_reason", "TEXT"),
             ],
+            "run_history": [
+                ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+            ],
         }
         with self._conn() as conn:
             for table, columns in migrations.items():
@@ -179,10 +182,10 @@ class Database:
             conn.execute(
                 """UPDATE run_history
                    SET finished_at=?, row_count=?, input_tokens=?, output_tokens=?,
-                       status=?, error_message=?
+                       status=?, error_message=?, retry_count=?
                    WHERE run_id=?""",
                 (now, len(result.rows), result.input_tokens, result.output_tokens,
-                 status, result.error, run_id),
+                 status, result.error, result.retry_count, run_id),
             )
 
     # ------------------------------------------------------------------
