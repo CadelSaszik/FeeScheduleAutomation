@@ -460,7 +460,7 @@ def cmd_excel(path: str = "fee_schedule.xlsx") -> None:
         for row_idx, row in enumerate(sheet_rows, 2):
             # For All sheet row is (xid, fee_row); for exchange sheet it's just fee_row
             if xid_for_lookup is None:
-                actual_xid, data_row = row[0], list(row[1:])
+                actual_xid, data_row = row[0], row[1]
             else:
                 actual_xid, data_row = xid_for_lookup, row
             fill = ALT_FILL if row_idx % 2 == 0 else None
@@ -486,7 +486,7 @@ def cmd_excel(path: str = "fee_schedule.xlsx") -> None:
                     cf_cell.hyperlink = f"#Review!A{rev_row}"
                     cf_cell.font = LINK_FONT
         _autosize(ws, headers, [
-            ([r[0]] + list(r[1:])) if xid_for_lookup is None else r
+            ([r[0]] + list(r[1])) if xid_for_lookup is None else r
             for r in sheet_rows
         ])
 
