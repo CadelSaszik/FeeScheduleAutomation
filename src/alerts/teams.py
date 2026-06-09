@@ -135,7 +135,7 @@ class TeamsAlerter:
         if self.dry_run:
             self.preview_dir.mkdir(parents=True, exist_ok=True)
             out = self.preview_dir / filename
-            out.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+            out.write_text(_json.dumps(card, indent=2), encoding="utf-8")
             logger.info("dry_run: Teams card written to %s", out)
             return True
         try:

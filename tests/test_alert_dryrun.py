@@ -79,10 +79,9 @@ class TestTeamsDryRun:
         assert result is True
         out = tmp_path / "teams_diff_edgx.json"
         assert out.exists()
-        payload = json.loads(out.read_text())
-        assert payload["type"] == "message"
-        card = payload["attachments"][0]["content"]
+        card = json.loads(out.read_text())
         assert card["type"] == "AdaptiveCard"
+        assert "body" in card
 
     def test_diff_no_changes_writes_distinct_file(self, tmp_path):
         alerter = TeamsAlerter(webhook_url="https://fake.hook", dry_run=True, preview_dir=tmp_path)
@@ -198,7 +197,6 @@ class TestPreviewAlerts:
         teams_files = list(tmp_path.glob("teams_*.json"))
         assert teams_files, "No teams_*.json files written"
         for f in teams_files:
-            payload = json.loads(f.read_text())
-            card = payload["attachments"][0]["content"]
+            card = json.loads(f.read_text())
             assert card["type"] == "AdaptiveCard", f"{f.name}: expected AdaptiveCard, got {card.get('type')}"
             assert "body" in card, f"{f.name}: AdaptiveCard missing body"
