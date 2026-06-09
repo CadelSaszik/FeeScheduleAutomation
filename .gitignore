@@ -32,8 +32,8 @@ ENV/
 *.swp
 *.swo
 
-# graphify — generated code index, rebuild with: graphify build .
-graphify-out/
+# graphify — commit the index so teammates start with a map; cost.json is local only
+graphify-out/cost.json
 
 # macOS
 .DS_Store

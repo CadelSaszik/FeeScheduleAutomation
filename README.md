@@ -123,15 +123,18 @@ CBOE is fetched via the `?csv=true` endpoint — one row per CBOE liquidity code
 
 ## Footnote handling
 
-Every extraction run produces a two-pass result:
+Every extraction run is literally two separate API calls:
 
-**Pass 1 — Mandatory footnote catalog.**
-Claude reads the entire document and catalogs every footnote, endnote, asterisk note, dagger note, and qualifier it finds before touching any rate. Footnotes are stored in the `footnotes` table and viewable with `--footnotes --exchange <id>`.
+**Pass 1 — Footnote catalog (dedicated API call).**
+The first call asks Claude for footnotes only, using a forced tool call (`record_footnotes`). The model cannot skip this step or defer it — it must call the tool with its complete footnote list before Pass 2 starts. Footnotes are stored in the `footnotes` table and viewable with `--footnotes --exchange <id>`.
 
-Note: CBOE exchanges are fetched via CSV export which **does not include footnotes**. The full footnotes are on the fee schedule landing pages at `cboe.com/us/options/membership/fee_schedule/<exchange>/`. This is why all CBOE rows carry medium confidence.
+Exception: CBOE CSV exchanges skip Pass 1 entirely. The `?csv=true` endpoint strips all footnote text, so there is nothing to catalog. All CBOE rows carry medium confidence as a result.
 
-**Pass 2 — Row extraction with footnote linkage.**
-For each fee row, Claude explicitly checks which footnotes from Pass 1 apply. Applicable footnotes are recorded in `footnote_refs`. An empty `footnote_refs` is only acceptable when Claude has verified no footnote affects that row.
+**Pass 2 — Row extraction with confirmed footnotes.**
+The second call supplies the complete footnote list from Pass 1 directly in the prompt, then forces a `record_fee_rows` tool call. Claude must check each confirmed footnote against each row — not as an instruction, but because the footnotes are sitting right above the task. Applicable footnotes are recorded in `footnote_refs`. An empty `footnote_refs` is only acceptable when Claude confirms no listed footnote affects that row.
+
+**Schema enforcement via tool use.**
+Both passes use `tool_choice: {"type": "tool"}` which forces a structured tool call matching the exact JSON schema. The API rejects malformed output before it reaches the application — no regex JSON parsing.
 
 **Confidence rules — high is the exception.**
 
@@ -216,18 +219,36 @@ Set `EMAIL_FROM`, `EMAIL_TO`, `EMAIL_SMTP_HOST`, etc. in `.env`. Works with Offi
 
 ## API cost estimate
 
-All costs are for `claude-sonnet-4-20250514`. Pricing as of mid-2025: **$3.00 / 1M input tokens, $15.00 / 1M output tokens**.
+All costs are for `claude-sonnet-4-20250514`. Pricing as of mid-2025:
 
-| Scenario | Input tokens | Output tokens | Est. cost |
-|----------|-------------|---------------|-----------|
-| Single exchange (e.g. EDGX) | ~30k–60k | ~3k–6k | ~$0.14–$0.27 |
-| Full 18-exchange run | ~500k–900k | ~40k–80k | ~$2.10–$3.90 |
-| Cross-exchange insight pass | ~40k–60k | ~1k–2k | ~$0.14–$0.20 |
-| **Full weekly run (all-in)** | **~600k–1M** | **~45k–85k** | **~$2.35–$4.25** |
+| Token type | Rate |
+|---|---|
+| Input (regular) | $3.00 / 1M |
+| Input (cache write, 25% premium) | $3.75 / 1M |
+| Input (cache read, 90% discount) | $0.30 / 1M |
+| Output | $15.00 / 1M |
 
-**Annual cost at weekly cadence:** ~$120–$220/year.
+### Two-pass extraction with prompt caching
 
-Max tokens per extraction call is set to 16,384 to handle large fee schedules (CBOE main: 115 CSV rows; AMEX PDF: 1,593 text lines).
+Every non-CBOE exchange runs two API calls:
+- **Pass 1** (footnote catalog): system prompt + full fee document → cache written; footnotes JSON output (~500–1k tokens)
+- **Pass 2** (row extraction): same system prompt + same fee document → **cache hit on both** (~90% cost reduction on those tokens); rows JSON output (~2k–5k tokens)
+
+CBOE CSV exchanges skip Pass 1 entirely (the CSV has no footnote text), so they use a single API call.
+
+| Scenario | Notes | Est. cost |
+|----------|-------|-----------|
+| CBOE exchange (CSV, single) | Pass 1 skipped; ~30k input, ~2k output | ~$0.12–$0.18 |
+| PDF/HTML exchange (single) | Pass 1 fresh + Pass 2 cached; ~40k input each | ~$0.18–$0.28 |
+| Full 18-exchange run | 4 CBOE (1 pass each) + 14 PDF/HTML (2 passes, cached) | ~$2.80–$4.50 |
+| Cross-exchange insight pass | Single pass, ~40k–60k input | ~$0.14–$0.20 |
+| **Full weekly run (all-in)** | | **~$3.00–$4.75** |
+
+**Annual cost at weekly cadence:** ~$155–$245/year.
+
+Pass 1 output cap is 4,096 tokens (footnotes only). Pass 2 is capped at 16,384 tokens to handle large fee schedules (CBOE main: 115 CSV rows; AMEX PDF: 1,593 text lines).
+
+**Cost compared to single-pass (old):** The two-pass approach costs roughly 15–25% more per PDF/HTML exchange due to the cache-write premium on Pass 1. The cache discount on Pass 2 partially offsets this. CBOE costs are unchanged (Pass 1 skipped). The accuracy improvement from guaranteed footnote extraction before row extraction is the primary motivation.
 
 ## Scheduling
 
@@ -281,6 +302,18 @@ Recommended workflow for a new or re-validated exchange:
 4. `python main.py --footnotes --exchange edgx` — confirm footnotes were captured (non-CSV exchanges)
 5. `python main.py --review` — inspect low/medium-confidence rows and their citations
 6. Compare against the hand-built spreadsheet or raw downloaded file in `data/raw/edgx/`
+
+## Manual override files
+
+If an exchange blocks automated fetching (403) or publishes dated PDFs that require manual updates, you can drop a file at:
+
+```
+data/raw/<exchange_id>/manual.pdf    # for PDF exchanges
+data/raw/<exchange_id>/manual.html   # for HTML exchanges
+data/raw/<exchange_id>/manual.csv    # for CSV exchanges
+```
+
+The fetcher checks for a `manual.*` file **before** attempting any HTTP request. If found, it uses that file and skips the network call entirely. This works for any exchange — MIAX with dated URLs, blocked CDNs, or any endpoint that requires a browser session. Delete the manual file when you want the fetcher to resume normal HTTP fetching.
 
 ## Known limitations
 

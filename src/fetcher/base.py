@@ -92,7 +92,17 @@ class BaseFetcher(ABC):
     # ------------------------------------------------------------------
 
     def fetch(self) -> FetchResult:
-        """Download the fee schedule and persist it to disk."""
+        """Download the fee schedule and persist it to disk.
+
+        Before making any HTTP request, checks for a manually placed file at
+        data/raw/<exchange_id>/manual.<ext> (pdf, html, or csv).  If found,
+        that file is used as-is — no HTTP request is made.  Drop a manually
+        downloaded file there to bypass any blocked or dated URL.
+        """
+        manual = self._find_manual_file()
+        if manual is not None:
+            return self._load_manual_file(manual)
+
         fetched_at = datetime.now(tz=timezone.utc)
         dest = self._dest_path(fetched_at)
 
@@ -173,6 +183,33 @@ class BaseFetcher(ABC):
     # ------------------------------------------------------------------
     # Overridable helpers
     # ------------------------------------------------------------------
+
+    def _find_manual_file(self) -> Optional[Path]:
+        """Return path to a manually placed override file, or None."""
+        manual_dir = RAW_DIR / self.exchange_id
+        for ext in ("pdf", "html", "csv"):
+            candidate = manual_dir / f"manual.{ext}"
+            if candidate.exists():
+                logger.info(
+                    "[%s] Manual override file found: %s — skipping HTTP fetch",
+                    self.exchange_id, candidate,
+                )
+                return candidate
+        return None
+
+    def _load_manual_file(self, path: Path) -> FetchResult:
+        ext = path.suffix.lstrip(".")
+        content_type = {"pdf": "pdf", "html": "html", "csv": "csv"}.get(ext, self.schedule_type)
+        return FetchResult(
+            exchange_id=self.exchange_id,
+            operator=self.operator,
+            url=f"file://{path}",
+            fetched_at=datetime.now(tz=timezone.utc),
+            content_type=content_type,
+            raw_bytes=path.read_bytes(),
+            file_path=path,
+            http_status=200,
+        )
 
     def _download(self, url: str) -> tuple[bytes, int]:
         resp = self.session.get(url, timeout=TIMEOUT, allow_redirects=True)
