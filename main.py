@@ -620,6 +620,124 @@ def cmd_footnotes(exchange_id: str) -> None:
         print()
 
 
+def cmd_preview_alerts(preview_dir: "Path | None" = None) -> None:
+    """Write all alert card types to data/alert-preview/ using synthetic data.
+
+    Teams JSON files can be pasted into https://adaptivecards.io/designer
+    to see the exact card rendering before configuring a live webhook.
+    """
+    from pathlib import Path as _Path
+    from src.alerts.teams import TeamsAlerter
+    from src.alerts.email import EmailAlerter
+    from src.diff.engine import DiffReport, RowChange, RateChange
+
+    out_dir = _Path(preview_dir) if preview_dir is not None else _Path("data/alert-preview")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    teams = TeamsAlerter(webhook_url="", dry_run=True, preview_dir=out_dir)
+    email = EmailAlerter(dry_run=True, preview_dir=out_dir)
+
+    # --- synthetic data ---
+    report_changed = DiffReport(
+        exchange_id="edgx",
+        has_changes=True,
+        modified=[
+            RowChange(
+                key={"exchange_id": "edgx", "ticker_class": "Penny", "sec_type": "OPT",
+                     "account_type": "CUST", "trade_type": "Electronic", "liq_code": "CA"},
+                change_type="modified",
+                rate_changes=[
+                    RateChange(field="make_rate", field_label="Make Rate",
+                               old_value=-0.48, new_value=-0.50),
+                    RateChange(field="take_rate", field_label="Take Rate",
+                               old_value=-0.48, new_value=-0.46),
+                ],
+            ),
+            RowChange(
+                key={"exchange_id": "edgx", "ticker_class": "Non-Penny", "sec_type": "OPT",
+                     "account_type": "PCUST", "trade_type": "PI", "liq_code": "PA"},
+                change_type="modified",
+                rate_changes=[
+                    RateChange(field="auction_init_rate", field_label="Auction Init Rate",
+                               old_value=-0.20, new_value=-0.22),
+                ],
+            ),
+        ],
+        added=[
+            RowChange(
+                key={"exchange_id": "edgx", "ticker_class": "Non-Penny", "sec_type": "OPT",
+                     "account_type": "CUST", "trade_type": "Electronic", "liq_code": "NA"},
+                change_type="added",
+            ),
+        ],
+        removed=[
+            RowChange(
+                key={"exchange_id": "edgx", "ticker_class": "Penny", "sec_type": "MLEG",
+                     "account_type": "CUST", "trade_type": "Solicitation", "liq_code": "SL"},
+                change_type="removed",
+            ),
+        ],
+    )
+    report_unchanged = DiffReport(exchange_id="bzx", has_changes=False)
+    all_reports = [report_changed, report_unchanged]
+
+    files_written = []
+
+    # Teams: per-exchange diff (with changes)
+    teams.send_diff_report(report_changed)
+    files_written.append(out_dir / "teams_diff_edgx.json")
+
+    # Teams: per-exchange no change
+    teams.send_diff_report(report_unchanged)
+    files_written.append(out_dir / "teams_no_change_bzx.json")
+
+    # Teams: error card
+    teams.send_error("c2", "HTTP 403 — CDN blocked request after 3 retries")
+    files_written.append(out_dir / "teams_error_c2.json")
+
+    # Teams: full run summary (mix of changed, unchanged, error)
+    teams.send_run_summary(
+        all_reports,
+        errors=[("c2", "HTTP 403 — CDN blocked")],
+        cross_exchange_insight=(
+            "EDGX increased make fees by $0.02/contract on Penny options, "
+            "consistent with a broader industry trend toward tighter rebates this quarter."
+        ),
+    )
+    files_written.append(out_dir / "teams_run_summary.json")
+
+    # Teams: review-needed card
+    teams.send_review_needed(
+        "edgx",
+        "CA (Penny/OPT/CUST/Electronic): make_rate extracted as null — "
+        "fee code description ambiguous\n"
+        "PA (Non-Penny/OPT/PCUST/PI): source_section missing",
+    )
+    files_written.append(out_dir / "teams_review_edgx.json")
+
+    # Email: per-exchange diff
+    email.send_diff_report(report_changed)
+    files_written.append(out_dir / "email_diff_edgx.txt")
+
+    # Email: run summary
+    email.send_run_summary(all_reports, errors=[("c2", "HTTP 403")])
+    files_written.append(out_dir / "email_run_summary.txt")
+
+    print(f"\nAlert previews written to: {out_dir.resolve()}")
+    print(f"\n  Teams cards ({len([f for f in files_written if f.suffix == '.json'])} files):")
+    for f in files_written:
+        if f.suffix == ".json":
+            print(f"    {f.name}")
+    print(f"\n  Email previews ({len([f for f in files_written if f.suffix == '.txt'])} files):")
+    for f in files_written:
+        if f.suffix == ".txt":
+            print(f"    {f.name}")
+    print(
+        "\n  To preview Teams cards: open https://adaptivecards.io/designer"
+        "\n  paste the JSON from any teams_*.json file into the 'Card Payload Editor' panel."
+    )
+
+
 def cmd_history(limit: int = 20) -> None:
     from src.persistence.db import Database
     from tabulate import tabulate
@@ -709,6 +827,12 @@ def main() -> None:
         help="Export all exchange fee data + review sheet to a single Excel workbook "
              "(default: fee_schedule.xlsx)",
     )
+    group.add_argument(
+        "--preview-alerts",
+        action="store_true",
+        help="Write all alert card types to data/alert-preview/ using synthetic data — "
+             "paste Teams JSON into adaptivecards.io/designer to preview cards",
+    )
 
     parser.add_argument(
         "--mock-jitter",
@@ -763,6 +887,8 @@ def main() -> None:
         if not args.exchange or len(args.exchange) != 1:
             parser.error("--footnotes requires exactly one --exchange ID")
         cmd_footnotes(args.exchange[0])
+    elif args.preview_alerts:
+        cmd_preview_alerts()
 
 
 if __name__ == "__main__":

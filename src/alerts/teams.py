@@ -11,8 +11,10 @@ Setup:
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -23,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 WEBHOOK_URL = os.getenv("TEAMS_WEBHOOK_URL", "")
 TIMEOUT = 10
+_DEFAULT_PREVIEW_DIR = Path("data/alert-preview")
 
 # Teams Adaptive Card schema version
 _SCHEMA = "http://adaptivecards.io/schemas/adaptive-card.json"
@@ -30,8 +33,15 @@ _VERSION = "1.4"
 
 
 class TeamsAlerter:
-    def __init__(self, webhook_url: str = WEBHOOK_URL):
+    def __init__(
+        self,
+        webhook_url: str = WEBHOOK_URL,
+        dry_run: bool = False,
+        preview_dir: Path = _DEFAULT_PREVIEW_DIR,
+    ):
         self.webhook_url = webhook_url
+        self.dry_run = dry_run
+        self.preview_dir = Path(preview_dir)
 
     def is_configured(self) -> bool:
         return bool(self.webhook_url)
@@ -46,7 +56,9 @@ class TeamsAlerter:
         review_summary: str,
     ) -> bool:
         """Post a separate card when extraction flagged items needing human review."""
-        if not self.is_configured() or not review_summary:
+        if not self.is_configured() and not self.dry_run:
+            return False
+        if not review_summary:
             return False
         card = _adaptive_card([
             {
@@ -69,28 +81,28 @@ class TeamsAlerter:
                 "isSubtle": True,
             },
         ])
-        return self._post(card)
+        return self._post(card, f"teams_review_{exchange_id}.json")
 
     def send_diff_report(
         self,
         report: DiffReport,
         insight: Optional[str] = None,
     ) -> bool:
-        if not self.is_configured():
+        if not self.is_configured() and not self.dry_run:
             logger.warning("Teams webhook not configured — skipping alert")
             return False
 
         if not report.has_changes:
-            return self._post(_no_change_card(report.exchange_id))
+            return self._post(_no_change_card(report.exchange_id), f"teams_no_change_{report.exchange_id}.json")
 
         card = _diff_card(report, insight)
-        return self._post(card)
+        return self._post(card, f"teams_diff_{report.exchange_id}.json")
 
     def send_error(self, exchange_id: str, error_message: str) -> bool:
-        if not self.is_configured():
+        if not self.is_configured() and not self.dry_run:
             return False
         card = _error_card(exchange_id, error_message)
-        return self._post(card)
+        return self._post(card, f"teams_error_{exchange_id}.json")
 
     def send_run_summary(
         self,
@@ -98,20 +110,19 @@ class TeamsAlerter:
         errors: list[tuple[str, str]],
         cross_exchange_insight: Optional[str] = None,
     ) -> bool:
-        if not self.is_configured():
+        if not self.is_configured() and not self.dry_run:
             return False
 
         changed = [r for r in reports if r.has_changes]
         unchanged = [r for r in reports if not r.has_changes]
         card = _summary_card(changed, unchanged, errors, cross_exchange_insight)
-        return self._post(card)
+        return self._post(card, "teams_run_summary.json")
 
     # ------------------------------------------------------------------
     # HTTP
     # ------------------------------------------------------------------
 
-    def _post(self, card: dict) -> bool:
-        # Teams Incoming Webhook expects a MessageCard or an attachments wrapper
+    def _post(self, card: dict, filename: str) -> bool:
         payload = {
             "type": "message",
             "attachments": [
@@ -121,6 +132,12 @@ class TeamsAlerter:
                 }
             ],
         }
+        if self.dry_run:
+            self.preview_dir.mkdir(parents=True, exist_ok=True)
+            out = self.preview_dir / filename
+            out.write_text(_json.dumps(card, indent=2), encoding="utf-8")
+            logger.info("dry_run: Teams card written to %s", out)
+            return True
         try:
             resp = requests.post(self.webhook_url, json=payload, timeout=TIMEOUT)
             resp.raise_for_status()
