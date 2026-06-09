@@ -4,6 +4,7 @@
 # Database and downloaded fee schedules — runtime data, not source
 data/db/
 data/raw/
+data/alert-preview/
 
 # Logs
 logs/
