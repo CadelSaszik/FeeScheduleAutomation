@@ -204,6 +204,7 @@ class ExtractionResult:
     error: Optional[str] = None
     input_tokens: int = 0
     output_tokens: int = 0
+    retry_count: int = 0
 
     @property
     def ok(self) -> bool:
@@ -278,15 +279,46 @@ class ClaudeExtractor:
                 system_prompt, fee_content, footnotes, exchange_id, extracted_at
             )
 
+            # Retry Pass 2 once if duplicate keys are found.
+            dup_errors = _check_duplicate_keys(rows)
+            retry_count = 0
+            if dup_errors:
+                logger.warning(
+                    "[%s] %d duplicate key(s) in Pass 2 output — retrying with error context",
+                    exchange_id, len(dup_errors),
+                )
+                try:
+                    retry_rows, retry_flags, rp2_in, rp2_out = self._pass2_rows(
+                        system_prompt, fee_content, footnotes, exchange_id, extracted_at,
+                        duplicate_errors=dup_errors,
+                    )
+                    p2_in += rp2_in
+                    p2_out += rp2_out
+                    retry_count = 1
+                    retry_dup_errors = _check_duplicate_keys(retry_rows)
+                    if len(retry_dup_errors) <= len(dup_errors):
+                        rows, flags = retry_rows, retry_flags
+                        logger.info("[%s] Retry resolved duplicates (%d remaining)", exchange_id, len(retry_dup_errors))
+                    else:
+                        logger.warning("[%s] Retry did not improve duplicates — keeping original output", exchange_id)
+                except Exception as retry_exc:
+                    logger.warning(
+                        "[%s] Retry pass2 failed — using original output: %s", exchange_id, retry_exc
+                    )
+
             result.input_tokens = p1_in + p2_in
             result.output_tokens = p1_out + p2_out
+            result.retry_count = retry_count
             result.raw_response = (
                 f"[pass1: {len(footnotes)} footnotes ({p1_in}+{p1_out} tok) | "
-                f"pass2: {len(rows)} rows ({p2_in}+{p2_out} tok)]"
+                f"pass2: {len(rows)} rows ({p2_in}+{p2_out} tok)"
+                + (f" | retried" if retry_count else "")
+                + "]"
             )
             logger.info(
-                "[%s] Extraction complete — %d input / %d output tokens (both passes)",
+                "[%s] Extraction complete — %d input / %d output tokens (both passes%s)",
                 exchange_id, result.input_tokens, result.output_tokens,
+                ", 1 retry" if retry_count else "",
             )
 
             rows, dedup_flags = _dedup_rows(rows, exchange_id)
@@ -368,15 +400,24 @@ class ClaudeExtractor:
         footnotes: list[Footnote],
         exchange_id: str,
         extracted_at: datetime,
+        duplicate_errors: list[str] | None = None,
     ) -> tuple[list[FeeRow], list[ExtractionFlag], int, int]:
         """Row extraction pass with the confirmed footnote list in context."""
         logger.info("[%s] Pass 2 — row extraction (%s)…", exchange_id, MODEL)
 
-        if not footnotes:
-            fn_block = "  (none — no footnotes were found in this document)"
-        else:
-            lines = [f"  [{fn.ref}] {fn.text}  ({fn.location})" for fn in footnotes]
-            fn_block = "\n".join(lines)
+        fn_block = _format_footnotes_for_injection(footnotes)
+
+        correction_block = ""
+        if duplicate_errors:
+            error_lines = "\n".join(f"  - {e}" for e in duplicate_errors)
+            correction_block = (
+                "\n\nCORRECTION REQUIRED — your previous response contained duplicate rows.\n"
+                "The following (ticker_class, sec_type, account_type, trade_type, liq_code) "
+                "keys appeared more than once:\n"
+                f"{error_lines}\n\n"
+                "Re-extract applying the conflict resolution rules. Each key must appear "
+                "exactly once in the output. Do NOT emit both conflicting rows.\n"
+            )
 
         response = self.client.messages.create(
             model=MODEL,
@@ -396,6 +437,14 @@ class ClaudeExtractor:
                             "PASS 2 — FEE ROW EXTRACTION.\n\n"
                             f"Pass 1 is complete. Confirmed footnotes from this document:\n\n"
                             f"{fn_block}\n\n"
+                            "FOOTNOTE CROSS-REFERENCING:\n"
+                            "Before extracting each row, scan the source cell for superscript "
+                            "numbers, asterisks, daggers (†), double-daggers (‡), or lettered "
+                            "markers. Cross-reference each marker against the catalog above. "
+                            "Include every matched marker ID in the row's footnote_refs. "
+                            "A row with footnote markers in the source but an empty "
+                            "footnote_refs is an error.\n"
+                            f"{correction_block}\n"
                             "Now extract all CUST and PCUST fee rows. For every row:\n"
                             "- Check each confirmed footnote above — does it apply to this row?\n"
                             "- If yes, add its ref to footnote_refs and explain the condition in "
@@ -528,6 +577,36 @@ def _extract_json(text: str) -> str | None:
             if depth == 0:
                 return text[start : i + 1]
     return None
+
+
+def _format_footnotes_for_injection(footnotes: list[Footnote]) -> str:
+    if not footnotes:
+        return "  (none — no footnotes were found in this document)"
+    lines = [
+        "=== FOOTNOTE CATALOG FROM PASS 1 ===",
+        "When you see a footnote marker in a rate cell, look it up here and",
+        "include its ID in footnote_refs for that row.",
+        "",
+    ]
+    for fn in footnotes:
+        lines.append(f"[{fn.ref}] {fn.text}  (found: {fn.location})")
+    lines.append("=== END FOOTNOTE CATALOG ===")
+    return "\n".join(lines)
+
+
+def _check_duplicate_keys(rows: list[FeeRow]) -> list[str]:
+    """Return error strings for any rows sharing the same natural key."""
+    seen: dict[tuple, int] = {}
+    errors: list[str] = []
+    for i, row in enumerate(rows):
+        key = (row.ticker_class, row.sec_type, row.account_type, row.trade_type, row.liq_code)
+        if key in seen:
+            errors.append(
+                f"key {key} duplicated at row indices {seen[key]} and {i}"
+            )
+        else:
+            seen[key] = i
+    return errors
 
 
 def _dedup_rows(
