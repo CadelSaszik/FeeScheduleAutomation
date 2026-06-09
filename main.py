@@ -386,40 +386,17 @@ def cmd_excel(path: str = "fee_schedule.xlsx") -> None:
 
     fn_lookup = db.get_all_latest_footnotes()
 
-    # ---- build per-exchange fee rows ----
-    by_exchange: dict[str, list] = defaultdict(list)
-    for r in sorted(all_rows, key=sort_key):
-        xid  = (r.get("exchange_id") or "").lower()
-        fn_refs = _json.loads(r.get("footnote_refs") or "[]")
-        conf    = r.get("confidence", "high")
-        fn_notes = "  |  ".join(
-            f"[{ref}] {fn_lookup[(xid, ref)]}"
-            for ref in fn_refs if (xid, ref) in fn_lookup
-        )
-        row = [
-            r.get("liq_code") or "",
-            r.get("sec_type") or "",
-            r.get("account_type") or "",
-            r.get("trade_type") or "",
-            r.get("ticker_class") or "",
-        ] + [
-            float(r[f]) if r.get(f) is not None else None for f in RATE_FIELDS
-        ] + [
-            "" if conf == "high" else ("?" if conf == "medium" else "!"),
-            ",".join(fn_refs),
-            fn_notes,
-        ]
-        by_exchange[xid.upper()].append(row)
-
-    # ---- build review rows ----
+    # ---- build review rows first so we can map keys → Review sheet row numbers ----
     review_db_rows = db.get_review_needed()
-    REV_HEADERS = ["Exchange", "LiqCode", "Conf", "AcctType", "Class",
-                   "SecType", "TradeType", "Make", "Take",
-                   "AuctInit", "AuctResp", "Breakup", "Source Citation", "Reason"]
+    REV_HEADERS  = ["Exchange", "LiqCode", "Conf", "AcctType", "Class",
+                    "SecType", "TradeType", "Make", "Take",
+                    "AuctInit", "AuctResp", "Breakup", "Source Citation", "Reason"]
     REV_CONF_IDX = REV_HEADERS.index("Conf")
-    review_rows = []
+    review_rows  = []
+    # key: (exchange_upper, liq_code, sec_type, acct_type, trade_type, class) → Excel row number on Review sheet
+    review_row_map: dict[tuple, int] = {}
     for r in review_db_rows:
-        fn_refs = _json.loads(r.get("footnote_refs") or "[]")
+        fn_refs  = _json.loads(r.get("footnote_refs") or "[]")
         citation = " > ".join(filter(None, [
             r.get("source_page"), r.get("source_section"),
             (f"fn. {', '.join(fn_refs)}" if fn_refs else None),
@@ -435,6 +412,83 @@ def cmd_excel(path: str = "fee_schedule.xlsx") -> None:
         ] + [
             float(r[f]) if r.get(f) is not None else None for f in RATE_FIELDS
         ] + [citation, r.get("confidence_reason") or ""])
+        key = (
+            (r.get("exchange_id") or "").upper(),
+            r.get("liq_code") or "",
+            r.get("sec_type") or "",
+            r.get("account_type") or "",
+            r.get("trade_type") or "",
+            r.get("ticker_class") or "",
+        )
+        if key not in review_row_map:
+            review_row_map[key] = len(review_rows) + 1  # +1 for header row → Excel row number
+
+    # ---- build per-exchange fee rows ----
+    # each entry: (xid_upper, fee_row_list)
+    by_exchange: dict[str, list] = defaultdict(list)
+    all_fee_rows_with_xid: list[tuple[str, list]] = []  # for All sheet
+    for r in sorted(all_rows, key=sort_key):
+        xid      = (r.get("exchange_id") or "").lower()
+        xid_up   = xid.upper()
+        fn_refs  = _json.loads(r.get("footnote_refs") or "[]")
+        conf     = r.get("confidence", "high")
+        fn_notes = "  |  ".join(
+            f"[{ref}] {fn_lookup[(xid, ref)]}"
+            for ref in fn_refs if (xid, ref) in fn_lookup
+        )
+        cf_mark = "" if conf == "high" else ("?" if conf == "medium" else "!")
+        row = [
+            r.get("liq_code") or "",
+            r.get("sec_type") or "",
+            r.get("account_type") or "",
+            r.get("trade_type") or "",
+            r.get("ticker_class") or "",
+        ] + [
+            float(r[f]) if r.get(f) is not None else None for f in RATE_FIELDS
+        ] + [cf_mark, ",".join(fn_refs), fn_notes]
+        by_exchange[xid_up].append(row)
+        all_fee_rows_with_xid.append((xid_up, row))
+
+    CF_COL_IDX = FEE_HEADERS.index("Cf") + 1          # 1-based column number of Cf in exchange sheets
+    ALL_CF_COL_IDX = CF_COL_IDX + 1                    # All sheet has Exchange prepended → shift by 1
+    LINK_FONT    = Font(color="0563C1", underline="single", bold=False, size=10)
+    ALL_HEADERS  = ["Exchange"] + FEE_HEADERS
+
+    def _write_fee_sheet(ws, headers, sheet_rows, cf_col, xid_for_lookup):
+        """Write a fee sheet. cf_col is the 1-based Cf column index."""
+        _write_header(ws, headers, FEE_HDR)
+        for row_idx, row in enumerate(sheet_rows, 2):
+            # For All sheet row is (xid, fee_row); for exchange sheet it's just fee_row
+            if xid_for_lookup is None:
+                actual_xid, data_row = row[0], list(row[1:])
+            else:
+                actual_xid, data_row = xid_for_lookup, row
+            fill = ALT_FILL if row_idx % 2 == 0 else None
+            display_row = ([actual_xid] + data_row) if xid_for_lookup is None else data_row
+            for col_idx, val in enumerate(display_row, 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                if fill:
+                    cell.fill = fill
+                if headers[col_idx - 1] in RATE_COLS and val is not None:
+                    cell.number_format = RATE_FMT
+            # Hyperlink on Cf cell if non-empty and row is in review map
+            cf_val = display_row[cf_col - 1]
+            if cf_val:
+                liq_code  = data_row[FEE_HEADERS.index("LiqCode")]
+                sec_type  = data_row[FEE_HEADERS.index("SecType")]
+                acct_type = data_row[FEE_HEADERS.index("AcctType")]
+                trade     = data_row[FEE_HEADERS.index("TradeType")]
+                cls_      = data_row[FEE_HEADERS.index("Class")]
+                key = (actual_xid, liq_code, sec_type, acct_type, trade, cls_)
+                if key in review_row_map:
+                    rev_row = review_row_map[key]
+                    cf_cell = ws.cell(row=row_idx, column=cf_col)
+                    cf_cell.hyperlink = f"#Review!A{rev_row}"
+                    cf_cell.font = LINK_FONT
+        _autosize(ws, headers, [
+            ([r[0]] + list(r[1:])) if xid_for_lookup is None else r
+            for r in sheet_rows
+        ])
 
     # ---- assemble workbook ----
     wb = Workbook()
@@ -443,17 +497,7 @@ def cmd_excel(path: str = "fee_schedule.xlsx") -> None:
     # Per-exchange fee sheets
     for xid in sorted(by_exchange):
         ws = wb.create_sheet(title=xid)
-        _write_header(ws, FEE_HEADERS, FEE_HDR)
-        sheet_rows = by_exchange[xid]
-        for row_idx, row in enumerate(sheet_rows, 2):
-            fill = ALT_FILL if row_idx % 2 == 0 else None
-            for col_idx, val in enumerate(row, 1):
-                cell = ws.cell(row=row_idx, column=col_idx, value=val)
-                if fill:
-                    cell.fill = fill
-                if FEE_HEADERS[col_idx - 1] in RATE_COLS and val is not None:
-                    cell.number_format = RATE_FMT
-        _autosize(ws, FEE_HEADERS, sheet_rows)
+        _write_fee_sheet(ws, FEE_HEADERS, by_exchange[xid], CF_COL_IDX, xid)
 
     # Review sheet
     if review_rows:
@@ -469,11 +513,15 @@ def cmd_excel(path: str = "fee_schedule.xlsx") -> None:
                     cell.number_format = RATE_FMT
         _autosize(ws_rev, REV_HEADERS, review_rows)
 
+    # All sheet at the front
+    ws_all = wb.create_sheet(title="All", index=0)
+    _write_fee_sheet(ws_all, ALL_HEADERS, all_fee_rows_with_xid, ALL_CF_COL_IDX, None)
+
     wb.save(path)
     exchange_count = len(by_exchange)
     review_count   = len(review_rows)
     print(f"Workbook written to: {path}")
-    print(f"  {exchange_count} exchange sheet(s) | {review_count} review row(s)")
+    print(f"  All sheet + {exchange_count} exchange sheet(s) | {review_count} review row(s)")
 
 
 def cmd_review() -> None:
