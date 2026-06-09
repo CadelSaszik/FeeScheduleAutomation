@@ -278,13 +278,18 @@ def cmd_report(trade_type_filter: str | None = None, excel_path: str | None = No
         print("No data in database. Run --run-now or --mock first.")
         return
 
+    _sec_order   = {"OPT": 0, "MLEG": 1}
+    _acct_order  = {"CUST": 0, "PCUST": 1}
+    _trade_order = {"Electronic": 0, "PI": 1, "Solicitation": 2}
+    _class_order = {"Penny": 0, "Non-Penny": 1}
+
     sort_key = lambda x: (
         x.get("exchange_id") or "",
+        _sec_order.get(x.get("sec_type") or "", 9),
+        _acct_order.get(x.get("account_type") or "", 9),
+        _trade_order.get(x.get("trade_type") or "", 9),
         x.get("liq_code") or "",
-        x.get("sec_type") or "",
-        x.get("account_type") or "",
-        x.get("trade_type") or "",
-        x.get("ticker_class") or "",
+        _class_order.get(x.get("ticker_class") or "", 9),
     )
 
     RATE_FIELDS = ["make_rate", "take_rate", "auction_init_rate", "auction_resp_rate", "breakup_rate"]
