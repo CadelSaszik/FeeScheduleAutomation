@@ -293,8 +293,14 @@ def cmd_report(trade_type_filter: str | None = None, excel_path: str | None = No
     )
 
     RATE_FIELDS = ["make_rate", "take_rate", "auction_init_rate", "auction_resp_rate", "breakup_rate"]
-    headers = ["Exchange", "LiqCode", "SecType", "AcctType", "TradeType", "Class",
-               "Make", "Take", "AuctInit", "AuctResp", "Breakup", "Cf", "FnRefs"]
+    term_headers = ["Exchange", "LiqCode", "SecType", "AcctType", "TradeType", "Class",
+                    "Make", "Take", "AuctInit", "AuctResp", "Breakup", "Cf", "FnRefs"]
+    excel_headers = term_headers + ["FnNotes"]
+
+    # Footnote lookup for the Excel FnNotes column (skip if not exporting)
+    fn_lookup: dict[tuple[str, str], str] = {}
+    if excel_path:
+        fn_lookup = db.get_all_latest_footnotes()
 
     display_rows = []   # formatted strings for terminal
     raw_rows = []       # raw values for Excel (rates as float or None)
@@ -306,9 +312,10 @@ def cmd_report(trade_type_filter: str | None = None, excel_path: str | None = No
         conf = r.get("confidence", "high")
         conf_mark = "" if conf == "high" else ("?" if conf == "medium" else "!")
         fn_mark = ",".join(fn_refs) if fn_refs else ""
+        xid = (r.get("exchange_id") or "").lower()
 
         meta = [
-            (r.get("exchange_id") or "").upper(),
+            xid.upper(),
             r.get("liq_code") or "",
             r.get("sec_type") or "",
             r.get("account_type") or "",
@@ -319,10 +326,17 @@ def cmd_report(trade_type_filter: str | None = None, excel_path: str | None = No
         rates_raw = [float(r[f]) if r.get(f) is not None else None for f in RATE_FIELDS]
         suffix = [conf_mark, fn_mark]
 
-        display_rows.append(meta + rates_fmt + suffix)
-        raw_rows.append(meta + rates_raw + suffix)
+        # FnNotes: concatenate footnote texts for Excel only
+        fn_notes = "  |  ".join(
+            f"[{ref}] {fn_lookup[(xid, ref)]}"
+            for ref in fn_refs
+            if (xid, ref) in fn_lookup
+        ) if fn_refs else ""
 
-    print(tabulate(display_rows, headers=headers, tablefmt="outline"))
+        display_rows.append(meta + rates_fmt + suffix)
+        raw_rows.append(meta + rates_raw + suffix + [fn_notes])
+
+    print(tabulate(display_rows, headers=term_headers, tablefmt="outline"))
     exchange_count = len(set(r["exchange_id"] for r in rows))
     shown = len(display_rows)
     filter_note = f" ({trade_type_filter} only)" if trade_type_filter else ""
@@ -330,7 +344,7 @@ def cmd_report(trade_type_filter: str | None = None, excel_path: str | None = No
     print("Cf: blank=high confidence, ?=medium, !=low  |  FnRefs: applicable footnote IDs")
 
     if excel_path:
-        _write_excel_report(headers, raw_rows, excel_path)
+        _write_excel_report(excel_headers, raw_rows, excel_path)
         print(f"\nExcel workbook written to: {excel_path}")
 
 
@@ -392,11 +406,70 @@ def _write_excel_report(headers: list, raw_rows: list, path: str) -> None:
     wb.save(path)
 
 
-def cmd_review() -> None:
+def _write_excel_review(headers: list, raw_rows: list, path: str) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    from collections import defaultdict
+
+    HEADER_FILL  = PatternFill("solid", fgColor="7B2D2D")
+    HEADER_FONT  = Font(bold=True, color="FFFFFF", size=10)
+    LOW_FILL     = PatternFill("solid", fgColor="FCE4D6")   # light orange — low confidence
+    MED_FILL     = PatternFill("solid", fgColor="FFF2CC")   # light yellow — medium confidence
+    ALT_MED_FILL = PatternFill("solid", fgColor="FFEB9C")
+    RATE_COLS    = {"Make", "Take", "AuctInit", "AuctResp", "Breakup"}
+    RATE_FMT     = '#,##0.00;[Red]-#,##0.00'
+    CONF_IDX     = headers.index("Conf")  # column used to pick row colour
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    by_exchange: dict[str, list] = defaultdict(list)
+    for row in raw_rows:
+        by_exchange[row[0]].append(row)
+
+    def _make_sheet(ws, sheet_rows):
+        ws.freeze_panes = "A2"
+        for col_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=h)
+            cell.font = HEADER_FONT
+            cell.fill = HEADER_FILL
+            cell.alignment = Alignment(horizontal="center")
+        for row_idx, row in enumerate(sheet_rows, 2):
+            conf = str(row[CONF_IDX]).upper()
+            fill = LOW_FILL if conf == "LOW" else (MED_FILL if row_idx % 2 == 0 else ALT_MED_FILL)
+            for col_idx, val in enumerate(row, 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                cell.fill = fill
+                if headers[col_idx - 1] in RATE_COLS and val is not None:
+                    cell.number_format = RATE_FMT
+        for col_idx, h in enumerate(headers, 1):
+            col_letter = get_column_letter(col_idx)
+            max_len = max(
+                (len(str(sheet_rows[i][col_idx - 1] or "")) for i in range(len(sheet_rows))),
+                default=0,
+            )
+            ws.column_dimensions[col_letter].width = min(max(max_len, len(h)) + 2, 60)
+
+    for xid in sorted(by_exchange):
+        ws = wb.create_sheet(title=xid.upper())
+        _make_sheet(ws, by_exchange[xid])
+
+    ws_all = wb.create_sheet(title="All", index=0)
+    _make_sheet(ws_all, raw_rows)
+
+    wb.save(path)
+
+
+def cmd_review(excel_path: str | None = None) -> None:
     """Print all rows and flags that need human review, with source citations."""
     from src.persistence.db import Database
     from tabulate import tabulate
     import json
+
+    def _t(s: str | None, n: int) -> str:
+        s = s or ""
+        return s if len(s) <= n else s[: n - 1] + "…"
 
     db = Database()
 
@@ -417,32 +490,46 @@ def cmd_review() -> None:
         print("Nothing needs review — all rows extracted at high confidence.")
         return
 
+    RATE_FIELDS = ["make_rate", "take_rate", "auction_init_rate", "auction_resp_rate", "breakup_rate"]
+
     if rows:
         print(f"\n{'='*60}")
         print("LOW / MEDIUM CONFIDENCE ROWS")
         print('='*60)
-        table = []
+        terminal_table = []
+        raw_rows = []
         for r in rows:
             fn_refs = json.loads(r.get("footnote_refs") or "[]")
             citation = " > ".join(filter(None, [
                 r.get("source_page"), r.get("source_section"),
                 (f"fn. {', '.join(fn_refs)}" if fn_refs else None),
             ])) or "unknown"
-            table.append([
+            reason = r.get("confidence_reason") or ""
+            meta = [
                 r["exchange_id"].upper(),
+                r.get("liq_code") or "",
                 r.get("confidence", "").upper(),
                 r.get("account_type", ""),
-                r.get("ticker_class", ""),
+                r.get("ticker_class", "") or "",
                 r.get("sec_type", ""),
                 r.get("trade_type", ""),
-                citation,
-                r.get("confidence_reason", "") or "",
-            ])
-        headers = ["Exchange", "Conf", "AcctType", "Class", "SecType",
-                   "TradeType", "Source Citation", "Reason"]
-        print(tabulate(table, headers=headers, tablefmt="outline"))
+            ]
+            terminal_table.append(meta + [_t(citation, 38), _t(reason, 45)])
+            rates_raw = [float(r[f]) if r.get(f) is not None else None for f in RATE_FIELDS]
+            raw_rows.append(meta + rates_raw + [citation, reason])
+
+        term_headers = ["Exchange", "LiqCode", "Conf", "AcctType", "Class",
+                        "SecType", "TradeType", "Source Citation", "Reason"]
+        print(tabulate(terminal_table, headers=term_headers, tablefmt="outline"))
 
     print(f"\n{len(rows)} row(s) need review | {len(flags)} flag(s) total")
+
+    if excel_path and rows:
+        excel_headers = ["Exchange", "LiqCode", "Conf", "AcctType", "Class",
+                         "SecType", "TradeType", "Make", "Take",
+                         "AuctInit", "AuctResp", "Breakup", "Source Citation", "Reason"]
+        _write_excel_review(excel_headers, raw_rows, excel_path)
+        print(f"\nExcel workbook written to: {excel_path}")
 
 
 def cmd_footnotes(exchange_id: str) -> None:
@@ -585,9 +672,10 @@ def main() -> None:
     parser.add_argument(
         "--excel",
         nargs="?",
-        const="fee_report.xlsx",
+        const="",
         metavar="FILE",
-        help="Write --report output to an Excel workbook with one sheet per exchange (default: fee_report.xlsx)",
+        help="Export to an Excel workbook. Works with --report (default: fee_report.xlsx) "
+             "and --review (default: fee_review.xlsx). Optionally specify a filename.",
     )
     parser.add_argument(
         "--debug",
@@ -614,14 +702,16 @@ def main() -> None:
             parser.error("--exchange cannot be used with --schedule")
         cmd_schedule()
     elif args.report:
+        excel = (args.excel or "fee_report.xlsx") if args.excel is not None else None
         cmd_report(
             trade_type_filter=getattr(args, "filter_trade_type", None),
-            excel_path=getattr(args, "excel", None),
+            excel_path=excel,
         )
     elif args.history:
         cmd_history()
     elif args.review:
-        cmd_review()
+        excel = (args.excel or "fee_review.xlsx") if args.excel is not None else None
+        cmd_review(excel_path=excel)
     elif args.footnotes:
         if not args.exchange or len(args.exchange) != 1:
             parser.error("--footnotes requires exactly one --exchange ID")

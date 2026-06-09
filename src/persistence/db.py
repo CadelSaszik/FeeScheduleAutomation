@@ -306,6 +306,21 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def get_all_latest_footnotes(self) -> dict[tuple[str, str], str]:
+        """Return {(exchange_id, ref): text} for the latest successful run of each exchange."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT fn.exchange_id, fn.ref, fn.text
+                   FROM footnotes fn
+                   JOIN (
+                       SELECT exchange_id, MAX(run_id) AS max_run
+                       FROM run_history WHERE status='ok'
+                       GROUP BY exchange_id
+                   ) latest ON fn.run_id = latest.max_run
+                       AND fn.exchange_id = latest.exchange_id""",
+            ).fetchall()
+        return {(r["exchange_id"], r["ref"]): r["text"] for r in rows}
+
     def get_footnotes(self, exchange_id: str, run_id: Optional[int] = None) -> list[dict]:
         """Return footnotes for the latest run (or a specific run_id)."""
         with self._conn() as conn:
